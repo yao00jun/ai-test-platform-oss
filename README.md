@@ -37,6 +37,8 @@ Java 21 与 Vue 3.5 持续测试工作台。需求文档、接口契约、固定
 
 常用开关：`up -Dev` 额外启动 Vite 热更新并改为打开 5173；`up -Build` 先重新打包 JAR；`-NoBrowser` 不弹浏览器；`down -KeepMysql` 保留数据库；`logs -Errors` 看错误输出。`dev.cmd` 双击等于 `up`，也可 `dev.cmd down`。这个入口只面向源码目录，不进入发行包。
 
+**首次启动会自动下载什么。** 需要预装的只有 Java 21、PowerShell 7.4+、Node.js 24+ 和 `pnpm@11.24.0`。其余工具由脚本按需从官方源下载到 Git 忽略的 `.tools/`：MySQL 8.4 压缩包约 270 MB（解压后 1.2 GB，仅在本机没有项目 MySQL 时下载）、Playwright Chromium 约 400 MB、Maven 3.9 约 9 MB。已装有 MySQL 8.4 的机器可用 `bootstrap-mysql.ps1 -MySqlHome '<安装目录>'` 直接复用；已有 Playwright 浏览器可把 `instance/config.json` 的 `paths.browsers` 指向它。使用发行包时不需要 Node.js 和 Maven，也不会下载 MySQL，需自备一个 MySQL 8.4 数据库。
+
 ## 脚本一览
 
 `scripts/` 里共 12 个脚本。日常只需要 `dev.ps1`；它在内部调用运维脚本。
