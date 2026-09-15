@@ -213,10 +213,19 @@ onUnmounted(() => { scope.invalidate(); parentScope.invalidate() })
       <ModuleNavigation v-if="activeType === 'FUNCTIONAL_CASE'" :modules="modules" :selected="parentFilter" :busy="busy" @select="parentFilter = $event" @edit="open" @manage="activeType = 'MODULE'" />
       <div class="asset-workspace-content">
       <div class="table-toolbar">
-        <div class="toolbar-filters"><a-input-search v-model="searchText" class="table-search" :placeholder="`搜索${definition?.label ?? '记录'}`" aria-label="搜索资产" allow-clear @search="query = searchText.trim()" @clear="query = ''" /><a-select v-model="parentFilter" :options="[{ label: '全部位置', value: 'ALL' }, { label: '根节点', value: 'ROOT' }, ...parentOptions]" style="min-width: 150px; max-width: 240px" aria-label="所属位置筛选" allow-search /></div>
-        <a-button type="text" :loading="loading" :disabled="busy" aria-label="刷新列表" @click="load()"><IconRefresh /></a-button>
+        <div class="toolbar-filters">
+          <a-input-search v-model="searchText" class="table-search" :placeholder="`搜索${definition?.label ?? '记录'}`" aria-label="搜索资产" allow-clear @search="query = searchText.trim()" @clear="query = ''" />
+          <a-select v-model="parentFilter" :options="[{ label: '全部位置', value: 'ALL' }, { label: '根节点', value: 'ROOT' }, ...parentOptions]" class="toolbar-parent-filter" aria-label="所属位置筛选" allow-search />
+          <ExchangeActions :project-id="workspace.selectedProjectId" :type="activeType" :parent-id="parentFilter !== 'ALL' && parentFilter !== 'ROOT' ? parentFilter : undefined" :parents="parentOptions" :selected-ids="selectedIds" @imported="load(); loadParents(); emit('changed', workspace.selectedProjectId)" />
+        </div>
+        <div class="inline-actions toolbar-actions">
+          <a-button v-if="selectedIds.length" type="text" size="small" @click="selectedIds = []">已选 {{ selectedIds.length }} 条 · 清除</a-button>
+          <a-button v-if="types.includes('API_DEFINITION')" @click="apiDiffVisible = true">接口变更对比</a-button>
+          <a-button v-if="hasExecution" @click="showRuns">执行记录</a-button>
+          <a-button @click="globalVisible = true">全局反馈</a-button>
+          <a-button type="text" :loading="loading" :disabled="busy" aria-label="刷新列表" @click="load()"><IconRefresh /></a-button>
+        </div>
       </div>
-      <div class="table-toolbar exchange-toolbar"><ExchangeActions :project-id="workspace.selectedProjectId" :type="activeType" :parent-id="parentFilter !== 'ALL' && parentFilter !== 'ROOT' ? parentFilter : undefined" :parents="parentOptions" :selected-ids="selectedIds" @imported="load(); loadParents(); emit('changed', workspace.selectedProjectId)" /><div class="inline-actions"><a-button v-if="types.includes('API_DEFINITION')" @click="apiDiffVisible = true">接口变更对比</a-button><a-button v-if="hasExecution" @click="showRuns">执行记录</a-button><a-button @click="globalVisible = true">全局反馈</a-button><a-button v-if="selectedIds.length" type="text" size="small" @click="selectedIds = []">已选 {{ selectedIds.length }} 条 · 清除</a-button></div></div>
       <ErrorNotice v-if="error" class="inline-error" :error="error" retry @retry="load()" />
       <ErrorNotice v-if="parentError" class="inline-error" :error="parentError" retry @retry="loadParents" />
       <AppTabs v-if="activeType === 'FUNCTIONAL_CASE'" v-model="caseView" :items="[{ value: 'table', label: '列表视图' }, { value: 'mindmap', label: '脑图视图' }]" label="用例视图" />
