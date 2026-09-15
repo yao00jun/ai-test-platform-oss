@@ -76,60 +76,6 @@ Java 21 与 Vue 3.5 持续测试工作台。需求文档、接口契约、固定
 
 ## 本地运行
 
-```powershell
-.\scripts\up.ps1          # MySQL → 配置 → JAR（缺失时自动打包）→ 浏览器内核 → 后端 → 自动打开 http://127.0.0.1:8080
-.\scripts\down.ps1        # 停止 Vite、后端与项目 MySQL
-.\scripts\restart.ps1     # 保留 MySQL，重启后端（可加 -Build 先重新打包）
-.\scripts\status.ps1      # 查看 MySQL / 后端 / 模型 / Vite 状态与日志位置
-.\scripts\logs.ps1        # 实时跟踪后端日志；-Errors 看错误输出，-Vite 看前端日志
-```
-
-`up.ps1 -Dev` 额外启动 Vite 热更新并改为打开 5173；`-NoBrowser` 不弹浏览器；`-Build` 强制重新打包。每个脚本都有同名 `.cmd`，可直接双击。这组脚本只面向源码目录的本机开发体验，不进入发行包；发行包仍使用下面的运维脚本。
-
-## 脚本一览
-
-`scripts/` 里的脚本分三组。一键脚本在内部调用运维脚本，日常只需记住第一组。
-
-**一键脚本（源码目录专用，不进发行包）**
-
-| 脚本 | 作用 |
-| --- | --- |
-| `up.ps1` | 按顺序拉起项目 MySQL、生成实例配置、缺 JAR 时打包、缺 Chromium 时安装、启动后端并打开浏览器；重复执行会跳过已在运行的部分 |
-| `down.ps1` | 依次停止 Vite、后端、项目 MySQL。`-KeepMysql` 保留数据库，`-Force` 在优雅停止失败时强制结束后端 |
-| `restart.ps1` | 保留 MySQL，重启后端；`-Build` 先重新打包，`-Dev` 同时启动 Vite |
-| `status.ps1` | 显示 MySQL、后端、模型配置、Vite 的运行状态、PID、地址和日志路径 |
-| `logs.ps1` | 实时跟踪后端日志。`-Errors` 看错误输出，`-Vite` 看前端日志 |
-
-**运维脚本（随发行包分发，面向单个实例）**
-
-每个脚本都接受 `-InstanceDirectory`，用于操作默认 `instance/` 之外的实例目录。
-
-| 脚本 | 作用 |
-| --- | --- |
-| `check.ps1` | 启动前体检：确认 Java 21、MySQL 8.4 可连接、存储目录可写、Chromium 是否安装、模型配置是否填写。`-TestModel` 向正在运行实例的实际模型发一次短请求，验证模型连通 |
-| `install-browsers.ps1` | 用 JAR 内匹配版本的 Playwright CLI 安装浏览器内核到配置的目录，默认 Chromium。`-Browsers chromium,firefox,webkit` 可多选，`-DryRun` 只预览安装位置 |
-| `start.ps1` | 以隐藏子进程启动后端 JAR，把数据库口令和模型 key 通过环境变量传入而非命令行；等待健康检查通过，记录 PID、日志路径与停止令牌到 `run/state.json`。首次启动由 Flyway 建表。端口被占用时直接报错，不结束他人进程 |
-| `stop.ps1` | 通过本机停止令牌请求后端优雅关闭，最长等待 90 秒，让执行队列、连接池和浏览器工作进程收尾。`-Force` 仅结束身份核对通过的本实例进程树 |
-| `backup.ps1` | 先优雅停止实例，再用 `mysqldump` 导出平台库、复制受管文件与主密钥，生成带 SHA-256 的 `manifest.json`。默认备份后自动重启，`-LeaveStopped` 保持停止。备份含解密密钥，需按数据库备份同等保护 |
-| `restore.ps1` | 把一份完整备份恢复到一个新的空实例：校验哈希、路径、密钥和迁移版本后导入数据库和文件。不覆盖原实例；失败会写 `run/restore-incomplete.json` 并阻止启动，需换新目标重来 |
-| `operations-common.ps1` | 上述脚本共用的函数库（读配置、找 Java、调用 MySQL 客户端、识别受管进程），不直接运行 |
-
-**开发与构建脚本（源码目录）**
-
-| 脚本 | 作用 |
-| --- | --- |
-| `bootstrap-mysql.ps1` | 下载官方 MySQL 8.4 压缩包到 `.tools/`，在 `.runtime/mysql/` 初始化并启动本项目专用实例（端口 3307），创建平台库、测试库和 `aitest` 账号。凭据写入 Git 忽略的 `connection.json` |
-| `maven.ps1` | 选定 JDK 21 后调用仓库内的 Maven Wrapper，所有 Maven 命令都经它执行 |
-| `dev.ps1` | 打包后端、安装前端依赖、启动受管后端，然后在当前终端前台运行 Vite。`-NoBuild` 复用已有 JAR。已被 `up.ps1 -Dev` 覆盖，保留以兼容旧文档 |
-| `build.ps1` | 完整发行构建：前端 lint、单元测试、打包，后端 `clean verify`，把前端嵌入 JAR，输出到 `artifacts/releases/` 并生成 ZIP、`source.zip`、`release.json` 与 `SHA256SUMS`。`-SkipTests` 只用于待验收包 |
-| `verify.ps1` | 不打包，只跑全部检查：前端 lint、单元、构建，后端单元与集成测试。`-IncludeBrowser` 再以独立端口和测试库跑 Playwright 端到端流程 |
-| `run-backend.ps1` / `run-compiled.ps1` | 不打 JAR、直接以 Maven `spring-boot:run` 或已编译 class 前台运行后端，供手动调试；一键脚本和验证流程都不依赖它们 |
-| `tests/release-smoke.mjs` | 对一个发行目录做完整发行演练：随机库、中文路径、登录、生成、执行、备份与恢复 |
-| `tests/*-contract.ps1` | 运维脚本的契约测试：MySQL 客户端调用、运维脚本行为、平台登录。独立手动执行，结果记录在验收文档中 |
-| `dev-common.ps1` | 一键脚本共用的函数库，不直接运行 |
-
-## 本地运行
-
 Windows 使用 PowerShell 7.4+、Java 21、MySQL 8.4。从源码构建还需要 Node.js 24+ 与 `pnpm@11.24.0`。发行 JAR 已包含前端，运行时不需要 Node.js 或 Maven。
 
 发行目录先复制 `config.example.json` 为 `instance/config.json`，配置一个空的专用 MySQL 数据库及独立账号。然后执行：
