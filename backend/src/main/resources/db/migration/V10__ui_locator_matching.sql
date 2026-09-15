@@ -1,0 +1,1 @@
+ALTER TABLE web_test_step ADD COLUMN exact_match BOOLEAN NOT NULL DEFAULT TRUE;

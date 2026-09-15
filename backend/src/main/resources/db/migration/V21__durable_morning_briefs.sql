@@ -1,0 +1,62 @@
+CREATE TABLE morning_brief_schedule (
+  project_id VARCHAR(32) PRIMARY KEY,
+  version BIGINT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  local_time CHAR(5) NOT NULL,
+  timezone VARCHAR(64) NOT NULL,
+  instruction TEXT NOT NULL,
+  max_retries TINYINT NOT NULL,
+  next_fire_at DATETIME(3),
+  updated_at DATETIME(3) NOT NULL,
+  KEY ix_morning_due(enabled,next_fire_at),
+  FOREIGN KEY(project_id) REFERENCES project(id),
+  CHECK(version > 0),
+  CHECK(max_retries BETWEEN 0 AND 3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE morning_brief_occurrence (
+  id VARCHAR(32) PRIMARY KEY,
+  project_id VARCHAR(32) NOT NULL,
+  local_date DATE NOT NULL,
+  timezone VARCHAR(64) NOT NULL,
+  scheduled_for DATETIME(3) NOT NULL,
+  missed_from DATE,
+  window_from DATETIME(3) NOT NULL,
+  window_to DATETIME(3) NOT NULL,
+  instruction TEXT NOT NULL,
+  max_retries TINYINT NOT NULL,
+  automatic_retries TINYINT NOT NULL DEFAULT 0,
+  attempt_count INT NOT NULL DEFAULT 0,
+  metrics JSON,
+  status VARCHAR(24) NOT NULL,
+  asset_id VARCHAR(32),
+  conversation_id VARCHAR(64) NOT NULL,
+  created_at DATETIME(3) NOT NULL,
+  updated_at DATETIME(3) NOT NULL,
+  UNIQUE KEY uq_morning_date(project_id,local_date),
+  KEY ix_morning_history(project_id,created_at,id),
+  KEY ix_morning_pending(project_id,status),
+  FOREIGN KEY(project_id) REFERENCES project(id),
+  FOREIGN KEY(asset_id) REFERENCES asset(id),
+  FOREIGN KEY(conversation_id) REFERENCES ai_conversation(id),
+  CHECK(max_retries BETWEEN 0 AND 3),
+  CHECK(window_from < window_to)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE morning_brief_attempt (
+  id VARCHAR(32) PRIMARY KEY,
+  occurrence_id VARCHAR(32) NOT NULL,
+  attempt_number INT NOT NULL,
+  job_id VARCHAR(32) NOT NULL,
+  request_key VARCHAR(160),
+  origin VARCHAR(16) NOT NULL,
+  retryable BOOLEAN NOT NULL DEFAULT FALSE,
+  diagnostic_code VARCHAR(64),
+  next_retry_at DATETIME(3),
+  created_at DATETIME(3) NOT NULL,
+  UNIQUE KEY uq_morning_attempt(occurrence_id,attempt_number),
+  UNIQUE KEY uq_morning_job(job_id),
+  UNIQUE KEY uq_morning_retry(occurrence_id,request_key),
+  FOREIGN KEY(occurrence_id) REFERENCES morning_brief_occurrence(id),
+  FOREIGN KEY(job_id) REFERENCES job_task(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

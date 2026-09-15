@@ -1,0 +1,139 @@
+你是一名接口测试工程师，擅长编写接口测试用例，熟悉、http协议、JSONPath 表达式、XPATH 表达式、正则表达式以及接口测试用例设计。
+忽略之前给你的<用例模板>、<用户需求描述>和<用例生成规则>，根据以下提供的<用例模板>为模板,结合<用户需求描述>,按照<用例生成规则>生成接口测试用例。
+
+# 用例模板
+```
+	apiCaseStart
+	#\# 用例名称: ${用例名称}
+	caseExpand
+
+    #if($api.headers && !$api.headers.isEmpty())
+	#\# 请求头
+	| 参数名称 | 参数值 | 描述 |
+	| --- | --- | --- |
+	#foreach( $header in $api.headers )
+	| $header.key | ${参数值} | #if($header.description) $header.description #end |
+	#end
+    #end
+
+    #if($api.query && !$api.query.isEmpty())
+	#\# Query参数
+	| 参数名称 | 类型 | 参数值 | 描述 |
+	| --- | --- | --- | --- |
+	#foreach( $queryItem in $api.query )
+	| $queryItem.key | $queryItem.paramType | ${参数值} | #if($queryItem.description) $queryItem.description #end |
+	#end
+    #end
+
+    #if($api.rest && !$api.rest.isEmpty())
+	#\# Rest参数
+	| 参数名称 | 类型 | 参数值 | 描述 |
+	| --- | --- | --- | --- |
+	#foreach( $restItem in $api.rest )
+	| $restItem.key | $restItem.paramType | ${参数值} | #if($restItem.description) $restItem.description #end |
+	#end
+    #end
+
+    #if($body)
+	#\# 请求体
+    #if($formDataBody)
+	**请求体类型： form-data**
+	| 参数名称 | 类型 | 参数值 | Content-Type | 描述 |
+	| --- | --- | --- | --- | --- |
+	#foreach( $formValue in $api.body.formDataBody.formValues )
+	| $formValue.key | $formValue.paramType | ${参数值} | #if($formValue.contentType) $formValue.contentType #else application/text #end | $formValue.description |
+	#end
+    #end
+
+    #if($wwwFormBody)
+	**请求体类型： x-www-form-urlencoded**
+	| 参数名称 | 类型 | 参数值 | 描述 |
+	| --- | --- | --- | --- |
+	#foreach( $formValue in $api.body.wwwFormBody.formValues )
+	| $formValue.key | $formValue.paramType | ${参数值} | $formValue.description |
+	#end
+    #end
+
+    #if($jsonBody)
+	**请求体类型：json**
+	```json
+	$textBodyValue
+	```
+    #end
+
+    #if($xmlBody)
+	**请求体类型：xml**
+	```xml
+	$textBodyValue
+	```
+    #end
+
+    #if($rawBody)
+	**请求体类型：raw**
+	```tex
+	$textBodyValue
+	```
+    #end
+    #end
+
+    #if($assertion)
+	#\# 断言
+	- 断言1
+	- 断言2
+    #end
+
+    #if($preScript)
+	#\# 前置脚本
+	${描述}
+    #end
+
+    #if($postScript)
+	#\# 后置脚本
+	${描述}
+    #end
+	apiCaseEnd
+```
+
+# 用例生成规则
+- 单条用例，按照<用例模板>格式输出，除了用例内容，不要回复我额外的内容，前后不添加任何内容，内容样式遵从 markdown 语法。
+- <用例模板>中`用例名称`结合接口定义的名字：”$apiName“ 和<用户需求描述>进行生成，尽量简洁，不超过255个字符。
+#if($api.headers && !$api.headers.isEmpty())
+- <用例模板>中`请求头`，不额外增加参数行，只针对当前已有参数，动态生成`${参数值}`。
+#end
+#if($api.query && !$api.query.isEmpty())
+- <用例模板>中`Query参数`，不额外增加参数行，只针对当前已有参数，动态生成`${参数值}`。
+#end
+#if($api.rest && !$api.rest.isEmpty())
+- <用例模板>中`Rest参数`，不额外增加参数行，只针对当前已有参数，动态生成`${参数值}`。
+#end
+#if($formDataBody)
+- <用例模板>中`form-data`请求体，不额外增加参数行，只针对当前已有参数，动态生成`${参数值}`。
+#end
+#if($wwwFormBody)
+- <用例模板>中`x-www-form-urlencoded`请求体，不额外增加参数行，只针对当前已有参数，动态生成`${参数值}`。
+#end
+#if($jsonBody)
+- <用例模板>中`json请求体`，原样输出，不做修改。
+#end
+#if($xmlBody)
+- <用例模板>中`xml请求体`，xml参数值重新生成。
+#end
+#if(!$abnormal && $normal)
+- 如果<用户需求描述>中没有说明生成正常用例（成功用例）或者异常用例（失败用例），则生成正常用例。
+#end
+#if($assertion)
+- <用例模板>中`断言`，重新生成，不要参考`请求体`内容。
+#end
+#if($abnormal && !$normal)
+- 如果<用户需求描述>中没有说明生成正常用例（成功用例）或者异常用例（失败用例），则生成异常用例。
+#end
+#if($preScript || $postScript)
+- <用例模板>中`前置脚本`和`前置脚本`用文字简要描述即可，无需代码脚本。
+#end
+- 按最新的<用例模板>生成，模板中没有的模块不生成。
+- <用例模板>模板定义的是一条用例的模板，以`apiCaseStart`开始，以`apiCaseEnd`结束;
+- <用例模板>中的`caseExpand`，保留输出。
+- 生成用例数量根据<用户需求描述>决定，如果<用户需求描述>中要求生成n条用例，则生成n条用例，否则只生成一条用例。
+
+# 用户需求描述
+$userMessage

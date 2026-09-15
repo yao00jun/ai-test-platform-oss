@@ -1,0 +1,15 @@
+{
+  "javaHome": "",
+  "mysqlHome": "",
+  "bind": "127.0.0.1",
+  "port": 8080,
+  "security": { "enabled": false, "username": "", "password": "", "sessionMinutes": 30, "secureCookie": false },
+  "database": {
+    "url": "jdbc:mysql://127.0.0.1:3307/ai_test_platform?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8",
+    "username": "aitest",
+    "password": ""
+  },
+  "model": { "baseUrl": "", "apiKey": "", "modelName": "" },
+  "paths": { "storage": "data", "browsers": "browsers", "localFileRoots": [] },
+  "runtime": { "heapMiB": 1024, "concurrency": 8, "browserWorkers": 2, "businessConnections": 32 }
+}

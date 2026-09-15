@@ -1,0 +1,78 @@
+server:
+  address: ${AI_TEST_BIND:127.0.0.1}
+  port: ${AI_TEST_PORT:8080}
+  shutdown: graceful
+  servlet:
+    session:
+      timeout: ${AI_TEST_SESSION_TIMEOUT:30m}
+      tracking-modes: cookie
+      cookie:
+        name: AI_TEST_SESSION
+        http-only: true
+        same-site: lax
+        secure: ${AI_TEST_SECURE_COOKIE:false}
+spring:
+  application:
+    name: ai-test-platform
+  datasource:
+    url: ${AI_TEST_DB_URL:jdbc:mysql://127.0.0.1:3307/ai_test_platform?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8}
+    username: ${AI_TEST_DB_USER:aitest}
+    password: ${AI_TEST_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 16
+      minimum-idle: 2
+      connection-timeout: 10000
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+    baseline-on-migrate: false
+    clean-disabled: true
+  servlet:
+    multipart:
+      max-file-size: 32MB
+      max-request-size: 34MB
+  threads:
+    virtual:
+      enabled: true
+  ai:
+    model:
+      chat: none
+      embedding: none
+      image: none
+      moderation: none
+      audio:
+        transcription: none
+        speech: none
+  jackson:
+    time-zone: UTC
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+mybatis-plus:
+  global-config:
+    banner: false
+aitest:
+  storage-root: ${AI_TEST_STORAGE:../data}
+  local-file-roots: ${AI_TEST_FILE_ROOTS:}
+  security:
+    enabled: ${AI_TEST_AUTH_ENABLED:false}
+    username: ${AI_TEST_AUTH_USERNAME:}
+    password: ${AI_TEST_AUTH_PASSWORD:}
+  model:
+    base-url: ${AI_TEST_MODEL_BASE_URL:}
+    api-key: ${AI_TEST_MODEL_API_KEY:}
+    model-name: ${AI_TEST_MODEL_NAME:}
+  execution:
+    concurrency: ${AI_TEST_CONCURRENCY:8}
+    browser-workers: ${AI_TEST_BROWSER_WORKERS:2}
+logging:
+  level:
+    root: INFO
+    org.mybatis: WARN
+    # SDK aggregation errors include provider response bodies. The gateway exposes sanitized errors.
+    org.springframework.ai.chat.model.MessageAggregator: OFF

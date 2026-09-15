@@ -1,0 +1,41 @@
+CREATE TABLE ai_model_price (
+  model_name VARCHAR(200) COLLATE utf8mb4_bin PRIMARY KEY,
+  version BIGINT NOT NULL,
+  enabled BOOLEAN NOT NULL,
+  currency CHAR(3) NOT NULL,
+  input_per_million DECIMAL(24,10) NOT NULL,
+  output_per_million DECIMAL(24,10) NOT NULL,
+  updated_at DATETIME(3) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE ai_model_invocation (
+  id VARCHAR(32) PRIMARY KEY,
+  project_id VARCHAR(32) NOT NULL,
+  job_id VARCHAR(32) NOT NULL,
+  model_name VARCHAR(200) COLLATE utf8mb4_bin NOT NULL,
+  model_version VARCHAR(100) NOT NULL,
+  response_model VARCHAR(200),
+  template_name VARCHAR(100) NOT NULL,
+  template_version CHAR(64) NOT NULL,
+  purpose VARCHAR(24) NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  error_code VARCHAR(100),
+  started_at DATETIME(3) NOT NULL,
+  completed_at DATETIME(3),
+  duration_ms BIGINT,
+  http_attempts INT NOT NULL DEFAULT 0,
+  usage_reported BOOLEAN NOT NULL DEFAULT FALSE,
+  prompt_tokens BIGINT,
+  completion_tokens BIGINT,
+  total_tokens BIGINT,
+  pricing_version BIGINT,
+  currency CHAR(3),
+  input_per_million DECIMAL(24,10),
+  output_per_million DECIMAL(24,10),
+  estimated_cost DECIMAL(30,12),
+  KEY ix_invocation_project(project_id,started_at),
+  KEY ix_invocation_model(project_id,model_name,model_version,started_at),
+  KEY ix_invocation_job(job_id),
+  FOREIGN KEY(project_id) REFERENCES project(id),
+  FOREIGN KEY(job_id) REFERENCES job_task(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
