@@ -132,7 +132,10 @@ class PlaywrightExecutionIT extends MySqlIntegrationTest {
     }
 
     private Map<String, Object> finished(String project, ExecutionCoordinator.Submission submission) {
-        await().atMost(Duration.ofSeconds(90)).until(() -> jobs.get(project, submission.jobId()).terminal());
+        // cancel() marks the job terminal before the worker (or the 5 s reconciler) finishes the
+        // run row, so wait for the run itself rather than the job.
+        await().atMost(Duration.ofSeconds(90)).until(() -> jobs.get(project, submission.jobId()).terminal()
+                && !Set.of("QUEUED", "RUNNING").contains(String.valueOf(runs.get(project, submission.runId()).get("status"))));
         return runs.get(project, submission.runId());
     }
     private Asset create(String project, AssetType type, String name, String parent, Map<String, Object> data) {
