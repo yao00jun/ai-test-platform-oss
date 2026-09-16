@@ -20,17 +20,17 @@ class JobSseRaceTest {
         AtomicBoolean committed = new AtomicBoolean();
         Instant now = Instant.now();
         when(jobs.get("project", "job")).thenAnswer(i -> new Job("job", "project", "TEST", committed.get() ? "SUCCEEDED" : "RUNNING", 0, "", Map.of(), null, now, now));
-        when(jobs.events("project", "job", 99)).thenAnswer(i -> committed.getAndSet(true)
-                ? List.of(new JobEvent(100, "done", Map.of("status", "SUCCEEDED"), now)) : List.of());
-        JobController controller = new JobController(jobs, new PlatformSessionAccess(new PlatformSecurityProperties(false, "", "")));
+        when(jobs.eventPage("project", "job", 99)).thenAnswer(i -> committed.getAndSet(true)
+                ? new JobEventPage("SUCCEEDED", List.of(new JobEvent(100, "done", Map.of("status", "SUCCEEDED"), now))) : new JobEventPage("RUNNING", List.of()));
+        JobController controller = new JobController(jobs, new PlatformSessionAccess(new PlatformSecurityProperties(false, "", "")), new JobSignals());
         try {
             var mvc = MockMvcBuilders.standaloneSetup(controller).build();
             var result = mvc.perform(get("/api/jobs/job/events").param("projectId", "project").header("Last-Event-ID", "99")).andReturn();
             result.getAsyncResult(5000);
             String response = mvc.perform(asyncDispatch(result)).andReturn().getResponse().getContentAsString();
             assertThat(response).contains("id:100", "event:done", "SUCCEEDED");
-            verify(jobs, atLeastOnce()).events("project", "job", 99);
-            verify(jobs, never()).events("project", "job", 0);
+            verify(jobs, atLeastOnce()).eventPage("project", "job", 99);
+            verify(jobs, never()).eventPage("project", "job", 0);
         } finally { controller.close(); }
     }
 }

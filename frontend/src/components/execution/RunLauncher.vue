@@ -70,7 +70,7 @@ onUnmounted(() => scope.invalidate())
 <style scoped>
 .run-launch-fields { display: grid; gap: 18px; margin-block: 24px; }
 .run-launch-fields label { display: grid; gap: 8px; font-size: 13px; }
-select { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; color: var(--text); background: #fff; }
+select { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; color: var(--text); background: var(--surface); }
 .run-launch-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
 .run-validation { margin-top: 16px; }
 </style>

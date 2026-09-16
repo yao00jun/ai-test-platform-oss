@@ -215,17 +215,17 @@ onUnmounted(() => scope.invalidate())
 </template>
 
 <style scoped>
-.exchange-drop { border: 1px dashed #bec8dd; border-radius: 10px; padding: 24px; background: #fafbfe; margin: 18px 0; }
+.exchange-drop { border: 1px dashed var(--border-strong); border-radius: 10px; padding: 24px; background: var(--surface-subtle); margin: 18px 0; }
 .exchange-drop label { display: grid; gap: 14px; color: var(--muted); }
 .exchange-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 18px 0; }
 .exchange-fields label, .exchange-mapping label { display: grid; gap: 8px; font-size: 13px; }
 .asset-table { min-width: 620px; }
 .exchange-resume { margin: 20px 0; } .exchange-resume .inline-actions { margin-top: 12px; }
 .exchange-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
-.exchange-mapping { padding: 16px; background: #f6f7ff; border-radius: 8px; display: grid; gap: 16px; margin-block: 16px; }
+.exchange-mapping { padding: 16px; background: var(--primary-soft); border-radius: 8px; display: grid; gap: 16px; margin-block: 16px; }
 .exchange-mapping h3 { margin: 0; font-size: 14px; }
 .exchange-issues { font-size: 12px; line-height: 1.7; max-height: 220px; overflow: auto; margin-block: 16px; }
-.error-line { color: #be3246; } .exchange-apply { margin-block: 20px; }
+.error-line { color: var(--danger); } .exchange-apply { margin-block: 20px; }
 .exchange-template { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 20px 0; border-bottom: 1px solid var(--border); }
 .exchange-template p { line-height: 1.7; max-width: 580px; }
 @media(max-width: 600px) { .exchange-fields { grid-template-columns: 1fr; } }

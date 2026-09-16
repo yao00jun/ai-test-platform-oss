@@ -32,6 +32,6 @@ const rows = computed(() => moduleRows(props.modules).filter(row => !query.value
 .module-navigation { min-width: 0; padding: 16px 12px; border-right: 1px solid var(--border); }
 .module-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 6px; font-size: 13px; }
 .module-list { margin-top: 10px; max-height: 560px; overflow: auto; }.module-filter { display: flex; gap: 7px; align-items: center; border: 0; background: none; font: inherit; font-size: 12px; padding: 9px 8px; width: 100%; text-align: left; color: var(--text); cursor: pointer; border-radius: 5px; min-width: 0; }
-.module-filter span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.module-row { display: flex; align-items: center; border-radius: 5px; }.module-row .module-filter { flex: 1; }.selected { background: #eeedff; color: var(--primary); }.module-filter:hover { background: var(--color-fill-1); }.module-hint { margin: 14px 0 0; line-height: 1.7; }
+.module-filter span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.module-row { display: flex; align-items: center; border-radius: 5px; }.module-row .module-filter { flex: 1; }.selected { background: var(--primary-soft); color: var(--primary); }.module-filter:hover { background: var(--color-fill-1); }.module-hint { margin: 14px 0 0; line-height: 1.7; }
 @media (max-width: 960px) { .module-navigation { border-right: 0; border-bottom: 1px solid var(--border); }.module-list { max-height: 180px; } }
 </style>

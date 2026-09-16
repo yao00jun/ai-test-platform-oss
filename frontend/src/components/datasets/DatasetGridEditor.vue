@@ -173,28 +173,28 @@ defineExpose({ flush, dirty })
 .dataset-controls { border: 0; padding: 16px 18px; margin: 0; min-width: 0; }
 .column-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
 .column-management { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
-.dataset-editor label { display: grid; gap: 6px; font-size: 12px; color: var(--muted, #66768b); }
-.dataset-editor input, .dataset-editor select, .dataset-editor textarea { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; color: var(--text, #17283f); background: var(--color-bg-2, #fff); border: 1px solid var(--border); border-radius: 5px; padding: 7px 9px; }
+.dataset-editor label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.dataset-editor input, .dataset-editor select, .dataset-editor textarea { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; color: var(--text); background: var(--color-bg-2); border: 1px solid var(--border); border-radius: 5px; padding: 7px 9px; }
 .column-actions label { flex: 0 1 150px; min-width: 100px; }
 .dataset-error { margin: 12px 18px; width: auto; }
-.cell-editor { padding: 0 18px 16px; margin: 0 12px 16px; background: var(--color-fill-1, #f7f9fc); border-radius: 8px; }
+.cell-editor { padding: 0 18px 16px; margin: 0 12px 16px; background: var(--color-fill-1); border-radius: 8px; }
 .cell-editor .dataset-heading { padding-left: 0; padding-right: 0; overflow-wrap: anywhere; }
 .cell-fields { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; padding: 12px 0; align-items: start; }
 .dataset-scroll { width: 100%; max-height: 530px; overflow: auto; border-block: 1px solid var(--border); }
 .dataset-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; text-align: left; }
 .dataset-table th, .dataset-table td { border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); padding: 0; }
-.dataset-table thead th { position: sticky; top: 0; z-index: 1; background: var(--color-fill-2, #f1f5fa); padding: 8px; white-space: nowrap; }
+.dataset-table thead th { position: sticky; top: 0; z-index: 1; background: var(--color-fill-2); padding: 8px; white-space: nowrap; }
 .dataset-table tbody tr:last-child > * { border-bottom: 0; }
 .dataset-table th:last-child, .dataset-table td:last-child { border-right: 0; }
 .dataset-cell { display: block; border: 0; background: transparent; font: inherit; color: inherit; text-align: left; width: 100%; min-width: 95px; max-width: 230px; min-height: 38px; padding: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: text; }
-.dataset-cell:hover { background: var(--color-primary-light-1, #edf4ff); }
+.dataset-cell:hover { background: var(--color-primary-light-1); }
 .dataset-cell:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
-.empty-cell { color: var(--muted, #8995a5); font-style: italic; }
-.row-grip, .column-grip { border: 0; background: transparent; color: var(--muted, #8995a5); cursor: grab; }
+.empty-cell { color: var(--muted); font-style: italic; }
+.row-grip, .column-grip { border: 0; background: transparent; color: var(--muted); cursor: grab; }
 .row-grip { display: flex; align-items: center; gap: 4px; padding: 8px; font-size: 11px; }
 .column-grip { padding: 0 3px 0 0; }
 .row-actions { display: flex; gap: 4px; padding: 5px; }
-.dataset-empty { padding: 24px !important; text-align: center; color: var(--muted, #8995a5); }
+.dataset-empty { padding: 24px !important; text-align: center; color: var(--muted); }
 .dataset-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; }
 .dataset-json { display: grid; gap: 8px; padding: 14px 18px 18px; }
 @media (max-width: 600px) { .cell-fields { grid-template-columns: 1fr; } .dataset-pagination { align-items: start; flex-direction: column; } }

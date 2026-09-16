@@ -1,35 +1,169 @@
+:root {
+  --app-bg: #f6f8fb;
+  --surface: #fff;
+  --surface-raised: #fff;
+  --surface-subtle: #f8f9fc;
+  --surface-muted: #f5f7fa;
+  --surface-hover: #fafaff;
+  --surface-code: #f7f9fc;
+  --text: #1e293b;
+  --text-secondary: #475569;
+  --muted: #64748b;
+  --text-subtle: #5f6f84;
+  --text-disabled: #95a1b3;
+  --border: #e5eaf1;
+  --border-subtle: #edf0f5;
+  --border-strong: #bec8dd;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-soft: #eeedff;
+  --primary-soft-text: #403873;
+  --primary-border: #cbc8f6;
+  --on-primary: #fff;
+  --sidebar: #f0f3f8;
+  --sidebar-hover: #e6eaf2;
+  --nav-text: #516078;
+  --nav-selected-bg: #e6e6ff;
+  --nav-selected-text: #4338ca;
+  --success: #147b59;
+  --success-soft: #eff8f4;
+  --warning: #976414;
+  --warning-soft: #fff9ee;
+  --warning-border: #f0dcb7;
+  --danger: #b4233e;
+  --danger-soft: #fff1f3;
+  --info-soft: #f8faff;
+  --info-border: #dce4f2;
+  --focus-ring: #b3aaff;
+  --diagram-dot: #e6e7ef;
+  --backdrop: #11182755;
+  --tooltip-bg: #1e293b;
+  --loading-layer: #ffffff99;
+  --card-shadow: 0 14px 45px #24304d0b;
+  --radius: 8px;
+  --app-primary-1: 244, 243, 255;
+  --app-primary-2: 230, 228, 255;
+  --app-primary-3: 203, 199, 255;
+  --app-primary-4: 166, 158, 250;
+  --app-primary-5: 67, 56, 202;
+  --app-primary-6: 79, 70, 229;
+  --app-primary-7: 65, 55, 199;
+  --app-primary-8: 53, 43, 166;
+  --app-primary-9: 40, 30, 132;
+  --app-primary-10: 30, 22, 103;
+}
+
+:root[data-theme='dark'] {
+  --app-bg: #111722;
+  --surface: #192230;
+  --surface-raised: #202c3d;
+  --surface-subtle: #1e2a3b;
+  --surface-muted: #243145;
+  --surface-hover: #243047;
+  --surface-code: #141d2b;
+  --text: #e3eaf5;
+  --text-secondary: #bdc9da;
+  --muted: #a1aec1;
+  --text-subtle: #91a0b5;
+  --text-disabled: #65768e;
+  --border: #334156;
+  --border-subtle: #2a374a;
+  --border-strong: #53647b;
+  --primary: #a59bff;
+  --primary-hover: #c0b9ff;
+  --primary-soft: #2d2949;
+  --primary-soft-text: #ddd8ff;
+  --primary-border: #61588f;
+  --on-primary: #14192b;
+  --sidebar: #151e2b;
+  --sidebar-hover: #243145;
+  --nav-text: #b5c2d5;
+  --nav-selected-bg: #322e50;
+  --nav-selected-text: #c2baff;
+  --success: #6ed4a7;
+  --success-soft: #1b3a32;
+  --warning: #efbf70;
+  --warning-soft: #3b3222;
+  --warning-border: #7d6038;
+  --danger: #ff9eaf;
+  --danger-soft: #452a37;
+  --info-soft: #202e46;
+  --info-border: #425778;
+  --focus-ring: #b9b0ff;
+  --diagram-dot: #334156;
+  --backdrop: #05080fb3;
+  --tooltip-bg: #334156;
+  --loading-layer: #111722b3;
+  --card-shadow: 0 14px 45px #00000033;
+  --app-primary-1: 39, 35, 64;
+  --app-primary-2: 50, 45, 80;
+  --app-primary-3: 68, 60, 112;
+  --app-primary-4: 98, 85, 161;
+  --app-primary-5: 192, 185, 255;
+  --app-primary-6: 165, 155, 255;
+  --app-primary-7: 143, 133, 245;
+  --app-primary-8: 125, 113, 223;
+  --app-primary-9: 112, 97, 209;
+  --app-primary-10: 96, 80, 185;
+}
+
 :root, body {
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-size: 14px;
   line-height: 1.6;
-  color: #1e293b;
-  background: #f6f8fb;
+  color: var(--text);
+  background: var(--app-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --app-bg: #f6f8fb;
-  --surface: #fff;
-  --text: #1e293b;
-  --muted: #64748b;
-  --border: #e5eaf1;
-  --primary: #4f46e5;
-  --primary-soft: #eeedff;
-  --sidebar: #f0f3f8;
-  --radius: 8px;
-  --primary-1: 244, 243, 255;
-  --primary-2: 230, 228, 255;
-  --primary-3: 203, 199, 255;
-  --primary-4: 166, 158, 250;
-  --primary-5: 126, 114, 243;
-  --primary-6: 79, 70, 229;
-  --primary-7: 65, 55, 199;
-  --primary-8: 53, 43, 166;
-  --primary-9: 40, 30, 132;
-  --primary-10: 30, 22, 103;
+}
+
+/* Arco portals inherit from body. Match its dark selector specificity so both palettes use our surfaces. */
+body, body[arco-theme='dark'] {
+  --primary-1: var(--app-primary-1);
+  --primary-2: var(--app-primary-2);
+  --primary-3: var(--app-primary-3);
+  --primary-4: var(--app-primary-4);
+  --primary-5: var(--app-primary-5);
+  --primary-6: var(--app-primary-6);
+  --primary-7: var(--app-primary-7);
+  --primary-8: var(--app-primary-8);
+  --primary-9: var(--app-primary-9);
+  --primary-10: var(--app-primary-10);
   --border-radius-small: 6px;
   --border-radius-medium: 8px;
-  --color-text-1: #1e293b;
-  --color-text-2: #475569;
-  --color-text-3: #64748b;
-  --color-fill-2: #f5f7fa;
+  --color-bg-1: var(--surface);
+  --color-bg-2: var(--surface);
+  --color-bg-3: var(--surface-raised);
+  --color-bg-4: var(--surface-raised);
+  --color-bg-5: var(--surface-raised);
+  --color-bg-popup: var(--surface-raised);
+  --color-text-1: var(--text);
+  --color-text-2: var(--text-secondary);
+  --color-text-3: var(--muted);
+  --color-text-4: var(--text-disabled);
+  --color-border: var(--border);
+  --color-border-1: var(--border-subtle);
+  --color-border-2: var(--border);
+  --color-border-3: var(--border-strong);
+  --color-border-4: var(--muted);
+  --color-fill-1: var(--surface-subtle);
+  --color-fill-2: var(--surface-muted);
+  --color-fill-3: var(--border);
+  --color-fill-4: var(--border-strong);
+  --color-primary-light-1: var(--primary-soft);
+  --color-secondary: var(--surface-muted);
+  --color-secondary-hover: var(--border);
+  --color-secondary-active: var(--border-strong);
+  --color-secondary-disabled: var(--surface-subtle);
+  --color-menu-light-bg: var(--surface);
+  --color-tooltip-bg: var(--tooltip-bg);
+  --color-spin-layer-bg: var(--loading-layer);
+  --color-mask-bg: var(--backdrop);
 }
+
+/* The brighter dark accent needs dark glyphs on filled controls. */
+body[arco-theme='dark'] .arco-btn-primary:not(.arco-btn-disabled) { color: var(--on-primary); }
+body[arco-theme='dark'] .arco-checkbox:not(.arco-checkbox-disabled),
+body[arco-theme='dark'] .arco-radio:not(.arco-radio-disabled),
+body[arco-theme='dark'] .arco-switch-checked:not([disabled]) { --color-white: var(--on-primary); }

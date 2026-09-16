@@ -67,8 +67,8 @@ const missingDependencies = computed(() => {
 .change-card { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-top: 12px; }
 .change-field { margin-top: 14px; }
 .change-values { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
-.change-values > div { min-width: 0; background: #f6f7fb; padding: 12px; border-radius: 6px; }
-.change-values > div:last-child { background: #eff8f4; }
+.change-values > div { min-width: 0; background: var(--surface-muted); padding: 12px; border-radius: 6px; }
+.change-values > div:last-child { background: var(--success-soft); }
 .change-values pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; margin: 8px 0 0; font-size: 12px; line-height: 1.7; }
 .change-buttons { margin-top: 16px; }
 @media(max-width: 600px) { .change-values { grid-template-columns: 1fr; } }

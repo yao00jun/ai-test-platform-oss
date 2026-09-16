@@ -45,8 +45,9 @@ public class RunRepository {
     public Map<String, Object> list(String projectId, int offset, int limit) {
         assets.project(projectId); if (offset < 0 || limit < 1 || limit > 200) throw Problem.invalid("分页参数无效");
         var rows = jdbc.queryForList("SELECT id,project_id,asset_id,job_id,name,status,summary,created_at,started_at,completed_at FROM test_run WHERE project_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?", projectId, limit, offset);
+        var summaries = summaries(rows.stream().map(row -> row.get("id").toString()).toList());
         List<Map<String, Object>> result = new ArrayList<>();
-        for (var row : rows) { var value = normalize(row); value.put("summary", summary(row.get("id").toString())); result.add(value); }
+        for (var row : rows) { var value = normalize(row); value.put("summary", summaries.get(row.get("id").toString())); result.add(value); }
         return Map.of("items", result, "total", jdbc.queryForObject("SELECT COUNT(*) FROM test_run WHERE project_id=?", Long.class, projectId));
     }
     public void started(String id) { jdbc.update("UPDATE test_run SET status='RUNNING',started_at=? WHERE id=? AND status='QUEUED'", Timestamp.from(Instant.now()), id); }
@@ -57,11 +58,30 @@ public class RunRepository {
     }
     public void itemFinished(String id, String status, long duration, String error) { jdbc.update("UPDATE test_run_item SET status=?,duration_ms=?,error=?,completed_at=? WHERE id=? AND status IN ('QUEUED','RUNNING')", status, duration, error, Timestamp.from(Instant.now()), id); }
     public Map<String, Object> summary(String id) {
-        Map<String, Long> counts = new LinkedHashMap<>(); long total = 0;
-        for (var row : jdbc.queryForList("SELECT status,COUNT(*) AS total FROM test_run_item WHERE run_id=? GROUP BY status", id)) {
-            long count = ((Number) row.get("total")).longValue(); counts.put(row.get("status").toString(), count); total += count;
+        return summaries(List.of(id)).get(id);
+    }
+    private Map<String, Map<String, Object>> summaries(List<String> ids) {
+        if (ids.isEmpty()) return Map.of();
+        String marks = String.join(",", Collections.nCopies(ids.size(), "?"));
+        // Hexadecimal IDs retain MySQL's case-insensitive lookup semantics when
+        // the request uses a different letter case from the stored run_id.
+        Map<String, Map<String, Long>> counts = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        ids.forEach(id -> counts.put(id, new LinkedHashMap<>()));
+        for (var row : jdbc.queryForList("SELECT run_id,status,COUNT(*) AS total FROM test_run_item WHERE run_id IN (" + marks + ") GROUP BY run_id,status", ids.toArray()))
+            counts.get(row.get("run_id").toString()).put(row.get("status").toString(), ((Number) row.get("total")).longValue());
+        Map<String, Map<String, Object>> dimensions = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        // Distinct cases must be counted across the whole run, not summed across
+        // status groups: DDT rows for one case can have different outcomes.
+        for (var row : jdbc.queryForList("SELECT run_id,COUNT(DISTINCT asset_id) AS case_count,COUNT(row_index) AS data_rows FROM test_run_item WHERE run_id IN (" + marks + ") GROUP BY run_id", ids.toArray()))
+            dimensions.put(row.get("run_id").toString(), row);
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        for (String id : ids) {
+            var statuses = counts.get(id); var values = dimensions.getOrDefault(id, Map.of());
+            result.put(id, Map.of("total", statuses.values().stream().mapToLong(Long::longValue).sum(), "counts", statuses,
+                    "caseCount", ((Number) values.getOrDefault("case_count", 0L)).longValue(),
+                    "dataRows", ((Number) values.getOrDefault("data_rows", 0L)).longValue()));
         }
-        return Map.of("total", total, "counts", counts, "caseCount", jdbc.queryForObject("SELECT COUNT(DISTINCT asset_id) FROM test_run_item WHERE run_id=?", Long.class, id), "dataRows", jdbc.queryForObject("SELECT COUNT(*) FROM test_run_item WHERE run_id=? AND row_index IS NOT NULL", Long.class, id));
+        return result;
     }
     @Transactional public void finish(String id, String forcedStatus) {
         var owner = jdbc.queryForList("SELECT project_id FROM test_run WHERE id=?", String.class, id);

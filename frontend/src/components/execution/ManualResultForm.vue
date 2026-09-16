@@ -59,9 +59,9 @@ onUnmounted(() => scope.invalidate())
 </template>
 
 <style scoped>
-.manual-result-form { display: grid; gap: 12px; padding: 18px; background: #f8f9fc; border: 1px solid var(--border); border-radius: 8px; }
+.manual-result-form { display: grid; gap: 12px; padding: 18px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 8px; }
 h4 { margin: 0; }.manual-result-form label { display: grid; gap: 7px; font-size: 13px; }
-select, textarea { font: inherit; color: var(--text); border: 1px solid #cbd1df; border-radius: 6px; padding: 9px 12px; background: #fff; width: 100%; box-sizing: border-box; }
-textarea { resize: vertical; }.manual-conflict { background: #fff8e9; padding: 14px; border: 1px solid #f6d798; border-radius: 6px; font-size: 13px; }
+select, textarea { font: inherit; color: var(--text); border: 1px solid var(--border-strong); border-radius: 6px; padding: 9px 12px; background: var(--surface); width: 100%; box-sizing: border-box; }
+textarea { resize: vertical; }.manual-conflict { background: var(--warning-soft); padding: 14px; border: 1px solid var(--warning-border); border-radius: 6px; font-size: 13px; }
 .manual-notes { white-space: pre-wrap; }.inline-actions { flex-wrap: wrap; }
 </style>

@@ -43,6 +43,9 @@ public class ExchangePreflight {
             } catch (Problem e) { errors.add(issue(source, 1, "referenceMappings." + ref.getKey(), "绑定的资产不存在或不属于当前项目")); }
         }
         Map<String, String> localIds = new LinkedHashMap<>(); nodes.keySet().forEach(key -> localIds.put(key, local(key)));
+        // Reused only for this preflight. Apply constructs a fresh scope while
+        // holding the project lock, so an earlier preview cannot authorize writes.
+        var validation = assets.creationValidation(projectId, localTypes);
         Map<String, Set<String>> dependencies = new LinkedHashMap<>(); row = 0;
         for (var node : bundle.nodes()) {
             row++; Set<String> deps = new HashSet<>(); dependencies.put(node.key(), deps); int before = errors.size();
@@ -63,7 +66,7 @@ public class ExchangePreflight {
                 var data = resolveData(node, localIds, mappings);
                 String parent = node.parentKey() == null || node.parentKey().isBlank() ? parentId : local(node.parentKey());
                 validateFiles(projectId, data, source, row);
-                assets.validateCreation(projectId, node.type(), parent, node.name(), data, localTypes);
+                validation.validate(node.type(), parent, node.name(), data);
             } catch (ExchangeException e) { errors.add(e.issue()); }
             catch (Problem e) {
                 String field = "data";

@@ -44,11 +44,11 @@ function select(asset: Asset, selected: boolean) {
 </template>
 
 <style scoped>
-.case-mindmap { padding: 24px; overflow: auto; background: radial-gradient(#e6e7ef 1px, transparent 1px); background-size: 18px 18px; }
+.case-mindmap { padding: 24px; overflow: auto; background: radial-gradient(var(--diagram-dot) 1px, transparent 1px); background-size: 18px 18px; }
 .mindmap-branch { display: grid; grid-template-columns: minmax(120px, 180px) minmax(300px, 1fr); align-items: start; gap: 28px; margin-bottom: 24px; }.mindmap-branch:last-child { margin-bottom: 0; }
-.module-node { position: relative; display: grid; gap: 8px; padding: 15px; border: 1px solid #cbc8f6; border-radius: 10px; background: #f4f2ff; overflow-wrap: anywhere; font-size: 13px; }
-.module-node::after { position: absolute; content: ''; width: 28px; height: 1px; background: #cbc8f6; top: 28px; right: -29px; }.case-nodes { border-left: 1px solid #cbc8f6; padding-left: 22px; min-width: 0; }
-.case-node { position: relative; padding: 12px 14px; background: var(--color-bg-2, white); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 12px; min-width: 0; }.case-node:last-child { margin-bottom: 0; }.case-node::before { position: absolute; content: ''; width: 22px; height: 1px; background: #cbc8f6; left: -23px; top: 28px; }
+.module-node { position: relative; display: grid; gap: 8px; padding: 15px; border: 1px solid var(--primary-border); border-radius: 10px; background: var(--primary-soft); overflow-wrap: anywhere; font-size: 13px; }
+.module-node::after { position: absolute; content: ''; width: 28px; height: 1px; background: var(--primary-border); top: 28px; right: -29px; }.case-nodes { border-left: 1px solid var(--primary-border); padding-left: 22px; min-width: 0; }
+.case-node { position: relative; padding: 12px 14px; background: var(--color-bg-2); border: 1px solid var(--border); border-radius: 9px; margin-bottom: 12px; min-width: 0; }.case-node:last-child { margin-bottom: 0; }.case-node::before { position: absolute; content: ''; width: 22px; height: 1px; background: var(--primary-border); left: -23px; top: 28px; }
 .case-node-heading, .case-node-actions { display: flex; align-items: center; gap: 7px; }.case-node-heading :deep(.asset-name) { flex: 1; min-width: 0; overflow-wrap: anywhere; }.case-node-actions { justify-content: space-between; margin-top: 12px; flex-wrap: wrap; }.case-node-text { font-size: 12px; color: var(--muted); margin: 8px 0; }.mono { white-space: nowrap; }
 @media (max-width: 1200px) { .mindmap-branch { grid-template-columns: minmax(0, 1fr); gap: 14px; }.module-node::after { display: none; }.case-mindmap { padding: 16px; } }
 @media (max-width: 600px) { .case-node-heading { flex-wrap: wrap; }.case-node-heading :deep(.asset-name) { flex-basis: calc(100% - 70px); }.case-node-text { white-space: normal; }.case-node-actions { align-items: start; flex-direction: column; gap: 10px; }.case-node-actions .inline-actions { flex-wrap: wrap; } }

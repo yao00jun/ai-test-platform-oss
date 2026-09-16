@@ -37,7 +37,7 @@ onUnmounted(() => { scope.invalidate(); if (imageUrl.value) URL.revokeObjectURL(
 <style scoped>
 .step-evidence { border: 1px solid var(--border); border-radius: 7px; padding: 14px; margin-block: 10px; }
 summary { cursor: pointer; line-height: 1.8; }h5 { margin: 12px 0 6px; font-size: 12px; }.evidence-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.evidence-panels section { min-width: 0; }.json-view { max-height: 340px; overflow: auto; }pre { white-space: pre-wrap; overflow-wrap: anywhere; }.step-error { white-space: pre-wrap; overflow-wrap: anywhere; color: #b22f45; font-size: 12px; }
+.evidence-panels section { min-width: 0; }.json-view { max-height: 340px; overflow: auto; }pre { white-space: pre-wrap; overflow-wrap: anywhere; }.step-error { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--danger); font-size: 12px; }
 .artifact-list { display: grid; gap: 8px; margin-top: 12px; }.artifact-list code { font-size: 11px; color: var(--muted); }.evidence-image { max-width: 100%; margin-top: 16px; border: 1px solid var(--border); border-radius: 6px; }
 @media(max-width: 700px) { .evidence-panels { grid-template-columns: 1fr; } }
 </style>

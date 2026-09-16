@@ -19,6 +19,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
@@ -36,6 +37,7 @@ public class JobService {
     private final TransactionTemplate leaseTransactions;
     private final AssetRepository assets;
     private final ObjectProvider<JobHandler> handlers;
+    private final JobSignals signals;
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private final Semaphore slots;
     private final String owner = Ids.newId();
@@ -43,8 +45,9 @@ public class JobService {
     private volatile boolean stopping;
 
     public JobService(JdbcTemplate jdbc, JsonCodec json, TransactionTemplate transactions, AssetRepository assets,
-                      ObjectProvider<JobHandler> handlers, @Value("${aitest.execution.concurrency:8}") int concurrency) {
+                      ObjectProvider<JobHandler> handlers, JobSignals signals, @Value("${aitest.execution.concurrency:8}") int concurrency) {
         this.jdbc = jdbc; this.json = json; this.transactions = transactions; this.assets = assets; this.handlers = handlers;
+        this.signals = signals;
         this.leaseTransactions = new TransactionTemplate(transactions.getTransactionManager());
         this.leaseTransactions.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.slots = new Semaphore(Math.clamp(concurrency, 1, 64));
@@ -120,10 +123,26 @@ public class JobService {
     public void event(String jobId, String projectId, String type, Map<String, Object> payload) {
         Map<String, Object> data = new LinkedHashMap<>(payload); data.put("jobId", jobId); data.put("projectId", projectId);
         jdbc.update("INSERT INTO job_event(job_id,event_type,payload,created_at) VALUES(?,?,?,?)", jobId, type, json.write(data), Timestamp.from(Instant.now()));
+        signals.afterCommit(jobId);
     }
     public List<JobEvent> events(String projectId, String id, long after) {
-        get(projectId, id);
-        return jdbc.query("SELECT * FROM job_event WHERE job_id=? AND seq>? ORDER BY seq LIMIT 1000", (rs, n) -> new JobEvent(rs.getLong("seq"), rs.getString("event_type"), json.map(rs.getString("payload")), rs.getTimestamp("created_at").toInstant()), id, after);
+        return eventPage(projectId, id, after).events();
+    }
+    public JobEventPage eventPage(String projectId, String id, long after) {
+        return jdbc.query("""
+                SELECT j.status,e.seq,e.event_type,e.payload,e.created_at
+                FROM job_task j JOIN project p ON p.id=j.project_id AND p.deleted=FALSE
+                LEFT JOIN job_event e ON e.job_id=j.id AND e.seq>?
+                WHERE j.id=? AND j.project_id=? ORDER BY e.seq LIMIT ?
+                """, rs -> {
+            if (!rs.next()) throw Problem.missing();
+            String status = rs.getString("status"); var events = new ArrayList<JobEvent>();
+            do {
+                long seq = rs.getLong("seq");
+                if (!rs.wasNull()) events.add(new JobEvent(seq, rs.getString("event_type"), json.map(rs.getString("payload")), rs.getTimestamp("created_at").toInstant()));
+            } while (rs.next());
+            return new JobEventPage(status, List.copyOf(events));
+        }, after, id, projectId, JobEventPage.LIMIT);
     }
 
     @Scheduled(fixedDelay = 250, initialDelay = 1000)

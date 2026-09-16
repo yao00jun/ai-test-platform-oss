@@ -43,16 +43,16 @@ watch(() => [props.messages.length, props.streamedText], async () => {
 <style scoped>
 .conversation-messages { flex: 1; min-height: 160px; overflow-y: auto; padding: 4px 2px 20px; }
 .conversation-empty { min-height: 250px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 14px; padding: 30px; }
-.conversation-empty > .arco-icon { color: #9b98d4; font-size: 32px; }
+.conversation-empty > .arco-icon { color: var(--primary); font-size: 32px; }
 .conversation-empty p { color: var(--muted); font-size: 13px; line-height: 1.9; }
 .conversation-message { margin-top: 24px; }
 .message-end { margin-left: 42px; }
 .message-start { margin-right: 16px; }
-.message-meta { display: flex; align-items: center; gap: 12px; font-size: 11px; color: #94a0b3; margin-bottom: 8px; }
-.message-meta strong { color: #526177; font-weight: 500; }
+.message-meta { display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--text-subtle); margin-bottom: 8px; }
+.message-meta strong { color: var(--text-secondary); font-weight: 500; }
 .message-content { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.85; }
-.message-end .message-content { padding: 13px 16px; border-radius: 10px 0 10px 10px; background: #eeedff; color: #403873; }
+.message-end .message-content { padding: 13px 16px; border-radius: 10px 0 10px 10px; background: var(--primary-soft); color: var(--primary-soft-text); }
 .message-footer { display: flex; align-items: center; gap: 7px; font-size: 11px; margin-top: 5px; }
-.applied-version { color: #258669; }
+.applied-version { color: var(--success); }
 .message-extra { font-size: 12px; color: var(--muted); margin-top: 8px; }
 </style>

@@ -39,20 +39,34 @@ public class AssetService {
     public Asset getInternal(String projectId, String id) { repository.project(projectId); return repository.find(projectId, id); }
     public List<Asset> all(String projectId) { repository.project(projectId); return repository.all(projectId, null, null).stream().map(secrets::redact).toList(); }
     public void validateCreation(String projectId, AssetType type, String parentId, String name, Map<String, Object> data, Map<String, AssetType> localTypes) {
+        creationValidation(projectId, localTypes).validate(type, parentId, name, data);
+    }
+    /** A validation scope belongs to one preflight invocation, never an AI adoption or shared cache. */
+    public CreationValidation creationValidation(String projectId, Map<String, AssetType> localTypes) {
         repository.project(projectId);
-        if (type.requiresParent() && (parentId == null || parentId.isBlank())) throw Problem.invalid(type.label() + "需要父记录");
-        if (parentId != null && !parentId.isBlank()) {
-            AssetType parentType = localTypes.containsKey(parentId) ? localTypes.get(parentId) : repository.find(projectId, parentId).type();
-            if (!parentType.childTypes().contains(type)) throw Problem.invalid("父记录不接受此类型");
+        return new CreationValidation(projectId, localTypes);
+    }
+    public final class CreationValidation {
+        private final String projectId;
+        private final Map<String, AssetType> types;
+        private CreationValidation(String projectId, Map<String, AssetType> localTypes) {
+            this.projectId = projectId; types = new LinkedHashMap<>(localTypes);
         }
-        Asset candidate = new Asset(Ids.newId(), projectId, type, parentId, name, "1", 0, "AI", false, now(), now(), validator.validate(type, name, data));
-        references(candidate).forEach((field, allowed) -> {
-            Object value = candidate.data().get(field);
-            if (value == null || value.toString().isBlank()) return;
-            AssetType targetType = localTypes.containsKey(value.toString()) ? localTypes.get(value.toString()) : repository.find(projectId, value.toString()).type();
-            if (!allowed.contains(targetType)) throw Problem.invalid(field + " 引用类型不兼容");
-        });
-        policies.forEach(policy -> policy.validate(null, candidate));
+        private AssetType typeOf(String id) {
+            return types.computeIfAbsent(id, key -> repository.find(projectId, key).type());
+        }
+        public void validate(AssetType type, String parentId, String name, Map<String, Object> data) {
+            if (type.requiresParent() && (parentId == null || parentId.isBlank())) throw Problem.invalid(type.label() + "需要父记录");
+            if (parentId != null && !parentId.isBlank() && !typeOf(parentId).childTypes().contains(type))
+                throw Problem.invalid("父记录不接受此类型");
+            Asset candidate = new Asset(Ids.newId(), projectId, type, parentId, name, "1", 0, "AI", false, now(), now(), validator.validate(type, name, data));
+            references(candidate).forEach((field, allowed) -> {
+                Object value = candidate.data().get(field);
+                if (value == null || value.toString().isBlank()) return;
+                if (!allowed.contains(typeOf(value.toString()))) throw Problem.invalid(field + " 引用类型不兼容");
+            });
+            policies.forEach(policy -> policy.validate(null, candidate));
+        }
     }
     public AssetPage list(String projectId, AssetType type, String parentId, String query, int offset, int limit) {
         repository.project(projectId);
@@ -62,6 +76,11 @@ public class AssetService {
         return new AssetPage(page.items().stream().map(secrets::redact).toList(), page.total());
     }
     public List<Asset> children(String projectId, String id) { get(projectId, id); return repository.all(projectId, null, id).stream().map(secrets::redact).toList(); }
+    public List<Asset> recent(String projectId, AssetType type, int limit) {
+        repository.project(projectId);
+        if (type == AssetType.PROJECT || limit < 1 || limit > 200) throw Problem.invalid("最近资产查询范围无效");
+        return repository.recent(projectId, type, limit).stream().map(secrets::redact).toList();
+    }
 
     @Transactional
     public Asset create(String projectId, AssetType type, String parentId, String name, Map<String, Object> data, String source) {
@@ -78,6 +97,63 @@ public class AssetService {
         repository.insert(candidate); syncRelations(candidate); repository.revise(candidate, "CREATE", source);
         observers.forEach(observer -> observer.changed(null, candidate));
         return secrets.redact(candidate);
+    }
+
+    /** Internal creation inputs use server-generated IDs and dependency order. */
+    public record Creation(String id, AssetType type, String parentId, String name, Map<String, Object> data) { }
+    private record CreationScope(AssetType type, String parentId) { }
+
+    @Transactional
+    public List<Asset> createBatch(String projectId, List<Creation> inputs, String source) {
+        if (inputs == null || inputs.isEmpty() || inputs.size() > 20000) throw Problem.invalid("批量创建要求 1–20000 条资产");
+        repository.lockProject(projectId); String origin = actor(source);
+        Set<String> ids = new HashSet<>();
+        for (Creation input : inputs) {
+            if (input.id() == null || !input.id().matches("[a-f0-9]{32}") || input.id().equals(projectId) || !ids.add(input.id()))
+                throw Problem.invalid("批量资产 ID 必须由服务端生成且唯一");
+            if (input.type() == null || input.type() == AssetType.PROJECT) throw Problem.invalid("请使用项目创建入口");
+        }
+        // These lookups exist only within this project-locked transaction; they
+        // are never reused by editing or AI adoption transactions.
+        Map<String, Asset> known = new LinkedHashMap<>();
+        Map<CreationScope, Integer> positions = new LinkedHashMap<>();
+        List<Asset> created = new ArrayList<>();
+        for (Creation input : inputs) {
+            String parent = input.parentId() == null || input.parentId().isBlank() ? null : input.parentId();
+            if (input.type().requiresParent() && parent == null) throw Problem.invalid(input.type().label() + "需要所属父记录");
+            if (input.id().equals(parent)) throw Problem.invalid("资产不能以自身作为父记录");
+            if (parent != null && !known.computeIfAbsent(parent, key -> repository.find(projectId, key)).type().childTypes().contains(input.type()))
+                throw Problem.invalid("父记录不接受此类型的子记录");
+            var scope = new CreationScope(input.type(), parent);
+            int position = positions.compute(scope, (key, previous) -> previous == null
+                    ? parent != null && ids.contains(parent) ? 0 : repository.nextPosition(projectId, input.type(), parent)
+                    : Math.addExact(previous, 1));
+            Instant now = now();
+            var checked = validator.validate(input.type(), input.name(), input.data());
+            var candidate = new Asset(input.id(), projectId, input.type(), parent, input.name().strip(), "1", position, origin, false, now, now,
+                    checked);
+            for (String field : references(candidate).keySet()) {
+                Object target = candidate.data().get(field);
+                if (target != null && !target.toString().isBlank() && !target.equals(candidate.id()))
+                    known.computeIfAbsent(target.toString(), key -> repository.find(projectId, key));
+            }
+            validateReferences(candidate, known);
+            policies.forEach(policy -> policy.validate(null, candidate));
+            known.put(candidate.id(), candidate); created.add(candidate);
+        }
+        repository.insertBatch(created);
+        List<Object[]> links = new ArrayList<>();
+        for (Asset candidate : created) references(candidate).forEach((field, allowed) -> {
+            Object target = candidate.data().get(field);
+            if (target != null && !target.toString().isBlank()) links.add(new Object[]{candidate.id(), target.toString(), field});
+        });
+        if (!links.isEmpty()) repository.jdbc().batchUpdate("INSERT INTO asset_relation(from_id,to_id,relation_type) VALUES(?,?,?)", links, 250,
+                (statement, link) -> { for (int index = 0; index < link.length; index++) statement.setObject(index + 1, link[index]); });
+        repository.reviseBatch(created, "CREATE", origin);
+        // Observer writes stay in this transaction. Any rejection rolls back
+        // every JDBC chunk, revision, relation and the enclosing import receipt.
+        created.forEach(candidate -> observers.forEach(observer -> observer.changed(null, candidate)));
+        return created.stream().map(secrets::redact).toList();
     }
 
     @Transactional

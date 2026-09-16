@@ -19,5 +19,5 @@ const options = defineModel<PipelineOptions>({ required: true })
 </template>
 
 <style scoped>
-.pipeline-config-fields { display: grid; gap: 12px; }label { display: grid; gap: 7px; font-size: 13px; }select { width: 100%; padding: 9px 12px; color: var(--text); background: white; border: 1px solid var(--border); border-radius: 6px; font: inherit; }select[multiple] { min-height: 66px; }p { margin: 0 0 8px; line-height: 1.6; }.pipeline-check { display: flex; align-items: center; gap: 8px; }
+.pipeline-config-fields { display: grid; gap: 12px; }label { display: grid; gap: 7px; font-size: 13px; }select { width: 100%; padding: 9px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font: inherit; }select[multiple] { min-height: 66px; }p { margin: 0 0 8px; line-height: 1.6; }.pipeline-check { display: flex; align-items: center; gap: 8px; }
 </style>

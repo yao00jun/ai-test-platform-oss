@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { IconMenu, IconRight } from '@arco-design/web-vue/es/icon'
 import { Message } from '@arco-design/web-vue'
 import AppSidebar from '../components/layout/AppSidebar.vue'
+import ThemeToggle from '../components/layout/ThemeToggle.vue'
 import ModelSettingsDrawer from '../components/settings/ModelSettingsDrawer.vue'
 import ErrorNotice from '../components/common/ErrorNotice.vue'
 import EmptyState from '../components/common/EmptyState.vue'
@@ -15,7 +16,9 @@ import { navigation } from '../router'
 const workspace = useWorkspaceStore()
 const session = useSessionStore()
 const route = useRoute()
-const collapsed = ref(localStorage.getItem('ai-test-platform:collapsed') === 'true')
+const collapsed = ref(false)
+try { collapsed.value = localStorage.getItem('ai-test-platform:collapsed') === 'true' }
+catch { /* The navigation remains usable if storage is restricted. */ }
 const mobileOpen = ref(false)
 const media = window.matchMedia('(max-width: 768px)')
 const mobile = ref(media.matches)
@@ -50,6 +53,7 @@ onUnmounted(() => { media.removeEventListener('change', onMediaChange); document
           <span class="project-switcher-label">当前项目</span>
           <a-select :model-value="workspace.selectedProjectId || undefined" placeholder="请选择项目" :loading="workspace.loading" aria-label="当前项目" :options="workspace.projects.map((item) => ({ label: item.name, value: item.id }))" @change="workspace.selectProject(String($event))" />
           <RouterLink v-if="!workspace.projects.length && workspace.projectsLoaded" to="/projects" class="small">项目管理</RouterLink>
+          <ThemeToggle />
         </div>
       </header>
       <main id="main-content" class="main-content">

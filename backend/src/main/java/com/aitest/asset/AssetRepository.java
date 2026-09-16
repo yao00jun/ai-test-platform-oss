@@ -7,6 +7,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.sql.ResultSet;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -57,6 +58,10 @@ public class AssetRepository {
         args.add(limit); args.add(offset);
         List<Asset> rows = jdbc.query("SELECT * FROM asset WHERE " + where + " ORDER BY position,created_at,id LIMIT ? OFFSET ?", (rs, n) -> metadata(rs), args.toArray());
         return new AssetPage(loadData(rows), total == null ? 0 : total);
+    }
+    public List<Asset> recent(String projectId, AssetType type, int limit) {
+        return loadData(jdbc.query("SELECT * FROM asset WHERE project_id=? AND asset_type=? AND deleted=FALSE ORDER BY updated_at DESC,id DESC LIMIT ?",
+                (rs, n) -> metadata(rs), projectId, type.name(), limit));
     }
     private Asset metadata(ResultSet rs) throws SQLException {
         return new Asset(rs.getString("id"), rs.getString("project_id"), AssetType.valueOf(rs.getString("asset_type")), rs.getString("parent_id"), rs.getString("name"), rs.getString("version"), rs.getInt("position"), rs.getString("source"), rs.getBoolean("confirmed"), rs.getTimestamp("created_at").toInstant(), rs.getTimestamp("updated_at").toInstant(), Map.of());
@@ -113,6 +118,34 @@ public class AssetRepository {
         String marks = fields.stream().map(f -> "?").collect(Collectors.joining(","));
         List<Object> args = new ArrayList<>(List.of(asset.id())); args.addAll(values(asset.type(), asset.data()));
         jdbc.update("INSERT INTO " + asset.type().table() + "(asset_id," + columns + ") VALUES(?," + marks + ")", args.toArray());
+    }
+    public void insertBatch(List<Asset> assets) {
+        // Preserve topological order for the self-referencing parent FK. Domain
+        // rows can be grouped only after every metadata row has been inserted.
+        jdbc.batchUpdate("INSERT INTO asset(id,project_id,asset_type,parent_id,name,version,position,source,confirmed,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                assets, 250, (statement, asset) -> bind(statement, asset.id(), asset.projectId(), asset.type().name(), asset.parentId(), asset.name(),
+                        Long.parseLong(asset.version()), asset.position(), asset.source(), asset.confirmed(), Timestamp.from(asset.createdAt()), Timestamp.from(asset.updatedAt())));
+        var byType = assets.stream().collect(Collectors.groupingBy(Asset::type, LinkedHashMap::new, Collectors.toList()));
+        byType.forEach((type, entries) -> {
+            String columns = type.fields().stream().map(field -> "`" + field.column() + "`").collect(Collectors.joining(","));
+            String marks = String.join(",", java.util.Collections.nCopies(type.fields().size() + 1, "?"));
+            jdbc.batchUpdate("INSERT INTO " + type.table() + "(asset_id," + columns + ") VALUES(" + marks + ")", entries, 250, (statement, asset) -> {
+                var args = new ArrayList<Object>(); args.add(asset.id()); args.addAll(values(type, asset.data())); bind(statement, args.toArray());
+            });
+        });
+    }
+    public void reviseBatch(List<Asset> assets, String operation, String actor) {
+        jdbc.batchUpdate("INSERT INTO asset_revision(id,project_id,asset_id,version,operation,source,snapshot,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                assets, 250, (statement, asset) -> {
+                    Asset stored = AssetSecrets.withData(asset, secrets.encode(asset.type(), asset.data()));
+                    bind(statement, Ids.newId(), asset.projectId(), asset.id(), Long.parseLong(asset.version()), operation, actor, json.write(stored), Timestamp.from(Instant.now()));
+                });
+        jdbc.batchUpdate("INSERT INTO audit_event(project_id,asset_id,action,source,detail,created_at) VALUES(?,?,?,?,?,?)",
+                assets, 250, (statement, asset) -> bind(statement, asset.projectId(), asset.id(), operation, actor,
+                        json.write(Map.of("version", asset.version(), "type", asset.type().name())), Timestamp.from(Instant.now())));
+    }
+    private static void bind(PreparedStatement statement, Object... values) throws SQLException {
+        for (int index = 0; index < values.length; index++) statement.setObject(index + 1, values[index]);
     }
     public void update(Asset changed, String baseVersion) {
         int affected;

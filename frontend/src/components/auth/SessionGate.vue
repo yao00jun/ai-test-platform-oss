@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { IconCheckCircle } from '@arco-design/web-vue/es/icon'
 import { useSessionStore } from '../../stores/session'
+import ThemeToggle from '../layout/ThemeToggle.vue'
 
 const session = useSessionStore()
 const locked = computed(() => session.state.phase !== 'ready')
@@ -28,7 +29,8 @@ function synchronizePortals() {
   }
 }
 function focusGate() {
-  const input = gate.value?.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)')
+  const input = gate.value?.querySelector<HTMLElement>('input:not(:disabled)')
+    ?? gate.value?.querySelector<HTMLElement>('button:not(:disabled)')
   ;(input ?? gate.value)?.focus({ preventScroll: true })
 }
 function trapTab(event: KeyboardEvent) {
@@ -76,7 +78,7 @@ onUnmounted(() => {
   </div>
   <section v-if="locked" ref="gate" class="session-gate" role="dialog" aria-modal="true" aria-labelledby="session-title" :aria-busy="session.state.busy" tabindex="-1" @keydown="trapTab">
     <div class="session-card">
-      <div class="session-brand"><span class="brand-symbol"><IconCheckCircle /></span><span>AI 测试平台</span></div>
+      <div class="session-brand"><span class="brand-symbol"><IconCheckCircle /></span><span>AI 测试平台</span><ThemeToggle /></div>
       <h1 id="session-title">登录测试工作台</h1>
       <p v-if="session.state.hasWorkspace" class="session-intro">当前标签页的未保存编辑已保留，登录后可继续。</p>
       <p v-else class="session-intro">使用已配置的工作空间账号，继续你的测试工作。</p>
@@ -103,8 +105,9 @@ onUnmounted(() => {
 body[data-platform-locked='true'] > :not(#app),
 body[data-platform-locked='true'] > :not(#app) * { visibility: hidden !important; pointer-events: none !important; }
 .session-gate { position: fixed; inset: 0; z-index: 2147480000; display: grid; place-items: center; padding: 24px; overflow-y: auto; background: var(--app-bg); outline: none; }
-.session-card { width: 100%; max-width: 432px; padding: 36px; margin: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 14px 45px #24304d0b; }
+.session-card { width: 100%; max-width: 432px; padding: 36px; margin: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--card-shadow); }
 .session-brand { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; font-weight: 600; margin-bottom: 30px; }
+.session-brand .theme-toggle { margin-left: auto; }
 .session-card h1 { font-size: 24px; }
 .session-intro { color: var(--muted); font-size: 13px; line-height: 1.8; margin: 12px 0 26px; }
 .session-form { display: flex; flex-direction: column; gap: 9px; }
@@ -112,7 +115,7 @@ body[data-platform-locked='true'] > :not(#app) * { visibility: hidden !important
 .session-input { width: 100%; height: 42px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); margin-bottom: 11px; }
 .session-input:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
 .session-input:disabled { background: var(--app-bg); }
-.session-error { color: #b4233e; font-size: 13px; line-height: 1.7; margin-bottom: 12px; overflow-wrap: anywhere; }
+.session-error { color: var(--danger); font-size: 13px; line-height: 1.7; margin-bottom: 12px; overflow-wrap: anywhere; }
 .session-note { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
 .session-loading { min-height: 130px; display: grid; place-items: center; }
 @media (max-width: 480px) { .session-gate { padding: 16px; } .session-card { padding: 28px 24px; } .session-card h1 { font-size: 22px; } }

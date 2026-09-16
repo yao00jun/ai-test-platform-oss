@@ -269,12 +269,12 @@ onUnmounted(() => { stream.close(); scope.invalidate(); conversationScope.invali
 .ai-policy { font-size: 12px; color: var(--muted); margin: 8px 0 16px; line-height: 1.8; }
 .ai-source-details summary { font-size: 12px; color: var(--muted); cursor: pointer; margin-bottom: 12px; }
 .conversation-toolbar { display: flex; justify-content: space-between; border-block: 1px solid var(--border); padding: 7px 0; }
-.conversation-history { padding: 12px; border-bottom: 1px solid var(--border); background: #f8f9fc; max-height: 160px; overflow: auto; }
+.conversation-history { padding: 12px; border-bottom: 1px solid var(--border); background: var(--surface-subtle); max-height: 160px; overflow: auto; }
 .conversation-history button { display: flex; justify-content: space-between; gap: 20px; padding: 8px 10px; border: 0; background: none; cursor: pointer; width: 100%; border-radius: 4px; font-size: 12px; text-align: left; color: var(--muted); }
-.conversation-history button.active { background: #e8e7ff; color: var(--primary); }
+.conversation-history button.active { background: var(--primary-soft); color: var(--primary); }
 .job-progress { padding: 10px 0; display: flex; flex-direction: column; gap: 8px; }
 .feedback-composer { padding-top: 14px; border-top: 1px solid var(--border); }
-.feedback-composer label { font-size: 12px; color: #475569; display: block; margin-bottom: 8px; }
+.feedback-composer label { font-size: 12px; color: var(--text-secondary); display: block; margin-bottom: 8px; }
 .composer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; gap: 16px; }
-.composer-actions > span { font-size: 11px; color: #98a1b1; }
+.composer-actions > span { font-size: 11px; color: var(--text-subtle); }
 </style>

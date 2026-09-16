@@ -127,16 +127,17 @@ public class ExchangeService {
         var row = rows.getFirst();
         if ("APPLIED".equals(row.get("status"))) return json.read(row.get("result").toString(), ApplyResult.class);
         if (!"READY".equals(row.get("status"))) throw new Problem(422, "IMPORT_INVALID", "预览包含错误；没有资产被创建或修改", json.tree(row.get("errors").toString()));
-        Pending pending = checkedPending(projectId, row);
-        var file = files.get(projectId, row.get("file_id").toString());
-        var checked = preflight.validate(projectId, file.name(), pending.bundle(), pending.parentId(), pending.referenceMappings());
+        var verified = checkedPending(projectId, row);
+        Pending pending = verified.pending(); var checked = verified.checked();
         Map<String, String> ids = new LinkedHashMap<>();
+        checked.order().forEach(node -> ids.put(node.key(), Ids.newId()));
+        List<AssetService.Creation> creations = new ArrayList<>();
         for (ExchangeNode node : checked.order()) {
             String parent = node.parentKey() == null || node.parentKey().isBlank() ? pending.parentId() : ids.get(node.parentKey());
             Map<String, Object> data = ExchangePreflight.resolveData(node, ids, pending.referenceMappings());
-            Asset created = assets.create(projectId, node.type(), parent, node.name(), data, "IMPORT");
-            ids.put(node.key(), created.id());
+            creations.add(new AssetService.Creation(ids.get(node.key()), node.type(), parent, node.name(), data));
         }
+        assets.createBatch(projectId, creations, "IMPORT");
         ApplyResult result = new ApplyResult(id, ids, List.copyOf(ids.values()), ids.size());
         jdbc.update("UPDATE import_job SET status='APPLIED',result=?,applied_at=? WHERE id=? AND project_id=?", json.write(result), Timestamp.from(Instant.now()), id, projectId);
         return result;
@@ -148,12 +149,13 @@ public class ExchangeService {
         if (rows.isEmpty()) throw Problem.missing();
         var row = rows.getFirst();
         if (!"API_DEFINITION".equals(row.get("asset_type")) || !"READY".equals(row.get("status"))) throw Problem.invalid("接口对比需要尚未导入、预检通过的 API_DEFINITION 文件");
-        Pending pending = checkedPending(projectId, row);
+        Pending pending = checkedPending(projectId, row).pending();
         if (pending.bundle().nodes().isEmpty() || pending.bundle().nodes().stream().anyMatch(node -> node.type() != AssetType.API_DEFINITION || node.parentKey() != null && !node.parentKey().isBlank() || !node.references().isEmpty()))
             throw Problem.invalid("接口对比只接收独立接口定义；带模块或其他测试资产的便携包请使用通用导入");
         return pending;
     }
-    private Pending checkedPending(String projectId, Map<String, Object> row) {
+    private record VerifiedPending(Pending pending, ExchangePreflight.Checked checked) { }
+    private VerifiedPending checkedPending(String projectId, Map<String, Object> row) {
         if (row.get("private_payload") == null) throw Problem.invalid("旧预览没有安全的私有数据，请重新上传文件");
         var file = files.get(projectId, row.get("file_id").toString());
         byte[] original;
@@ -168,7 +170,7 @@ public class ExchangeService {
         Pending pending = json.read(secrets.decrypt(row.get("private_payload").toString()), Pending.class);
         var checked = preflight.validate(projectId, file.name(), pending.bundle(), pending.parentId(), pending.referenceMappings());
         if (!checked.errors().isEmpty()) throw new Problem(422, "IMPORT_INVALID", "当前项目与预览不再匹配；没有资产被创建或修改", checked.errors());
-        return pending;
+        return new VerifiedPending(pending, checked);
     }
     public List<Map<String, Object>> capabilities() {
         List<Map<String, Object>> result = new ArrayList<>();

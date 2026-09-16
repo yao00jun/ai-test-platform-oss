@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, useId, watch } from 'vue'
+import { computed, ref, useId, watch } from 'vue'
 import type { Asset, AssetDraft, CatalogType } from '../../api/types'
 import { compileFields, initialFieldValues } from '../../core/catalog-form'
 import AdvancedEditor from '../editors/AdvancedEditor.vue'
@@ -14,7 +14,7 @@ const props = defineProps<{ definition: CatalogType; asset?: Asset; projectId?: 
 const name = ref('')
 const values = ref<Record<string, unknown>>({})
 const errors = ref<Record<string, string>>({})
-const formModel = reactive({ name: '' })
+const formModel = computed(() => ({ ...values.value, name: name.value }))
 const formId = useId()
 const inputId = (key: string) => `${formId}-${key}`
 const baseline = ref<Asset>()

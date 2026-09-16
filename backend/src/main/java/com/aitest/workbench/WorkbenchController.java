@@ -18,8 +18,7 @@ public final class WorkbenchController {
         Map<String, Long> status = new LinkedHashMap<>();
         for (var row : jdbc.queryForList("SELECT i.status,COUNT(*) AS total FROM test_run_item i JOIN test_run r ON i.run_id=r.id WHERE r.project_id=? GROUP BY i.status", projectId)) status.put(row.get("status").toString(), ((Number) row.get("total")).longValue());
         long openBugs = jdbc.queryForObject("SELECT COUNT(*) FROM asset a JOIN bug_issue b ON b.asset_id=a.id WHERE a.project_id=? AND a.deleted=FALSE AND b.status IN ('OPEN','IN_PROGRESS','REOPENED')", Long.class, projectId);
-        var recentBugs = jdbc.queryForList("SELECT id FROM asset WHERE project_id=? AND asset_type='BUG' AND deleted=FALSE ORDER BY updated_at DESC,id DESC LIMIT 10", String.class, projectId)
-                .stream().map(id -> assets.get(projectId, id)).toList();
+        var recentBugs = assets.recent(projectId, AssetType.BUG, 10);
         return Map.of("counts", counts, "runSummary", status, "openBugCount", openBugs, "recentRuns", runs.list(projectId, 0, 10).get("items"), "recentBugs", recentBugs);
     }
 }

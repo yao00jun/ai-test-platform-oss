@@ -25,7 +25,7 @@ function keydown(event: KeyboardEvent, index: number) {
 
 <style scoped>
 .app-tabs { display: flex; gap: 26px; padding: 0 24px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: thin; }
-.app-tabs button { position: relative; border: 0; background: none; color: #68788e; font-size: 13px; white-space: nowrap; padding: 16px 0 15px; cursor: pointer; }
+.app-tabs button { position: relative; border: 0; background: none; color: var(--muted); font-size: 13px; white-space: nowrap; padding: 16px 0 15px; cursor: pointer; }
 .app-tabs button[aria-selected="true"] { color: var(--primary); font-weight: 600; }
 .app-tabs button[aria-selected="true"]::after { position: absolute; content: ''; height: 2px; inset: auto 0 0; background: var(--primary); }
 </style>

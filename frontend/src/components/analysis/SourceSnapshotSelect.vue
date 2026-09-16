@@ -43,5 +43,5 @@ onUnmounted(() => scope.invalidate())
 </template>
 
 <style scoped>
-.snapshot-choice { min-width: 0; display: grid; gap: 9px; }.snapshot-choice label { display: grid; gap: 7px; font-size: 13px; }select { box-sizing: border-box; min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 6px; background: white; color: var(--text); padding: 9px 10px; font: inherit; }p { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }.snapshot-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.snapshot-choice { min-width: 0; display: grid; gap: 9px; }.snapshot-choice label { display: grid; gap: 7px; font-size: 13px; }select { box-sizing: border-box; min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); padding: 9px 10px; font: inherit; }p { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }.snapshot-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 </style>

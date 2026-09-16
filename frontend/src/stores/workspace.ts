@@ -10,7 +10,9 @@ const selectedKey = 'ai-test-platform:selected-project'
 export const useWorkspaceStore = defineStore('workspace', () => {
   const projects = ref<Asset[]>([])
   const catalog = ref<CatalogType[]>([])
-  const selectedProjectId = ref(localStorage.getItem(selectedKey) ?? '')
+  const selectedProjectId = ref('')
+  try { selectedProjectId.value = localStorage.getItem(selectedKey) ?? '' }
+  catch { /* Browser persistence is optional, including during login initialization. */ }
   const loading = ref(false)
   const projectsLoaded = ref(false)
   const activityRevision = ref(0)

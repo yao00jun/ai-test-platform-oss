@@ -3,7 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#4f46e5" />
+    <meta name="theme-color" content="#f6f8fb" />
+    <style>html { background: #f6f8fb; } html[data-theme="dark"] { background: #111722; }</style>
+    <script>
+      // Apply before styles and the app module load. Keep precedence in sync with core/theme.ts.
+      (() => {
+        let preference = null;
+        let dark = false;
+        try { preference = window.localStorage.getItem('ai-test-platform:theme'); } catch { /* Storage may be restricted. */ }
+        try { dark = window.matchMedia('(prefers-color-scheme: dark)').matches; } catch { /* Light is the fallback. */ }
+        const theme = preference === 'light' || preference === 'dark' ? preference : dark ? 'dark' : 'light';
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', theme === 'dark' ? '#111722' : '#f6f8fb');
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="description" content="AI 测试平台：管理测试资产、接口、场景、计划与缺陷。" />
     <title>AI 测试平台</title>
