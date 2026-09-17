@@ -2,11 +2,11 @@
 
 The route-selected/collapsible navigation in `src/components/layout/AppSidebar.vue` and the conversation placement, feedback reuse, and scroll behavior in `src/components/ai/ConversationMessages.vue` / `AiDrawer.vue` are adapted from:
 
-- `<metersphere 源码根>/frontend/src/components/business/ms-menu/index.vue`
-- `<metersphere 源码根>/frontend/src/components/business/ms-menu/use-menu-tree.ts`
-- `<metersphere 源码根>/frontend/src/components/business/ms-ai-drawer/index.vue`
-- `<metersphere 源码根>/frontend/src/components/business/ms-ai-drawer/components/conversation.vue`
-- `<metersphere 源码根>/frontend/src/components/business/ms-ai-drawer/components/conversationList.vue`
+- `frontend/src/components/business/ms-menu/index.vue`
+- `frontend/src/components/business/ms-menu/use-menu-tree.ts`
+- `frontend/src/components/business/ms-ai-drawer/index.vue`
+- `frontend/src/components/business/ms-ai-drawer/components/conversation.vue`
+- `frontend/src/components/business/ms-ai-drawer/components/conversationList.vue`
 
 Adaptations replace MeterSphere's organization/permission stores, Axios cancellation, i18n, Element conversation widgets, and Tailwind/Less utilities with this project's Vue Router, Arco components, project-scoped API requests, native EventSource, and CSS tokens. The original inspected files have no individual license header; the following upstream repository notice is retained verbatim.
 
