@@ -1,4 +1,5 @@
 package com.aitest.exchange;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.asset.*;
 import com.aitest.common.Problem;
@@ -16,6 +17,7 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @Import(BatchImportIT.ObserverConfiguration.class)
+@Tag("slow")
 class BatchImportIT extends ExchangeHttpTest {
     @Autowired JdbcTemplate jdbc;
     @Test void mixedBatchPreservesExistingPositionsReferencesEncryptedRevisionsAndObserverEffects() throws Exception {

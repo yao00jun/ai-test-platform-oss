@@ -1,4 +1,5 @@
 package com.aitest.bug;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.asset.*;
 import com.aitest.execution.Values;
@@ -8,6 +9,7 @@ import java.nio.file.Files;
 import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 
+@Tag("slow")
 class CodeRcaIT extends CodeRcaSupport {
     @org.springframework.beans.factory.annotation.Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Test void recurringFailureCannotReplaceTheCreationSourceWhenTheClockMovesBackwards() throws Exception {

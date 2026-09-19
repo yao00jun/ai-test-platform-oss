@@ -1,4 +1,5 @@
 package com.aitest.acceptance;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.ai.ModelSettingsService;
 import com.aitest.asset.Asset;
@@ -24,6 +25,7 @@ import static org.awaitility.Awaitility.await;
 
 /** Exercises the four public capabilities of each module through real HTTP and MySQL. */
 @TestPropertySource(properties = {"aitest.schedules.enabled=false", "aitest.morning-brief.enabled=false", "aitest.notifications.enabled=false"})
+@Tag("slow")
 class CapabilityMatrixIT extends ExchangeHttpTest {
     static final ModelFixtureServer model;
     static { try { model = new ModelFixtureServer(); } catch (Exception failure) { throw new ExceptionInInitializerError(failure); } }

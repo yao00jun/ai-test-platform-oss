@@ -13,6 +13,7 @@
   <name>AI Test Platform</name>
   <description>Single-process continuous testing workspace with version-safe AI collaboration</description>
   <properties>
+    <aitest.it.forks>3</aitest.it.forks>
     <java.version>21</java.version>
     <maven.compiler.release>21</maven.compiler.release>
     <spring-ai.version>2.0.1</spring-ai.version>
@@ -63,7 +64,12 @@
         <executions><execution><id>java-21</id><goals><goal>enforce</goal></goals><configuration><rules><requireJavaVersion><version>[21,22)</version><message>Run with Java 21. Use scripts/maven.ps1 to select the installed JDK.</message></requireJavaVersion></rules></configuration></execution></executions>
       </plugin>
       <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><configuration><argLine>-Dfile.encoding=UTF-8 -XX:+EnableDynamicAgentLoading</argLine></configuration></plugin>
-      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-failsafe-plugin</artifactId><executions><execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution></executions><configuration><argLine>-Dfile.encoding=UTF-8 -XX:+EnableDynamicAgentLoading</argLine></configuration></plugin>
+      <!-- Integration tests run in ${aitest.it.forks} parallel JVMs. Each fork gets its own MySQL schema and storage root
+           (see MySqlIntegrationTest and scripts/reset-test-databases.ps1); set -Daitest.it.forks=1 for an external test database.
+           @Tag("slow") classes are skipped by default and run by the nightly profile (scripts/build.ps1 always uses it). -->
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-failsafe-plugin</artifactId><executions><execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution></executions>
+        <configuration><argLine>-Dfile.encoding=UTF-8 -XX:+EnableDynamicAgentLoading -Daitest.test.fork=${surefire.forkNumber}</argLine><excludedGroups>slow</excludedGroups>
+          <forkCount>${aitest.it.forks}</forkCount><reuseForks>true</reuseForks></configuration></plugin>
     </plugins>
   </build>
   <profiles>
@@ -74,6 +80,18 @@
           <resource><directory>src/main/resources</directory><filtering>false</filtering></resource>
           <resource><directory>../frontend/dist</directory><targetPath>static</targetPath><filtering>false</filtering></resource>
         </resources>
+      </build>
+    </profile>
+    <profile>
+      <id>nightly</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration><excludedGroups>never</excludedGroups></configuration>
+          </plugin>
+        </plugins>
       </build>
     </profile>
   </profiles>

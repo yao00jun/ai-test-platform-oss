@@ -1,4 +1,5 @@
 package com.aitest.ai;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.asset.*;
 import com.aitest.ai.pipeline.PipelineService;
@@ -14,6 +15,7 @@ import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 
+@Tag("slow")
 class PipelineLifecycleIT extends ExchangeHttpTest {
     @Autowired ModelSettingsService settings;
     @Autowired PipelineService pipelines;

@@ -1,4 +1,5 @@
 package com.aitest.notification;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.asset.*;
 import com.aitest.common.*;
@@ -23,6 +24,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 
 @TestPropertySource(properties = {"aitest.notifications.initial-delay-ms=3600000", "aitest.notifications.retry-delay-seconds=1", "aitest.execution.concurrency=1", "aitest.morning-brief.enabled=false"})
+@Tag("slow")
 class WebhookBoundaryIT extends ExchangeHttpTest {
     @Autowired NotificationService notifications;
     @Autowired ExecutionCoordinator execution;

@@ -1,4 +1,5 @@
 package com.aitest.acceptance;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.support.IsolatedApplication;
 import com.aitest.support.ModelFixtureServer;
@@ -18,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /** Actual JVM crashes; no fake lease expiry or replacement Spring service is counted as a restart. */
+@Tag("slow")
 class ProcessRecoveryIT {
     @Test void crashRecoversQueuedRefinementButNeverReplaysInFlightWritesAndSseResumesAtItsCursor() throws Exception {
         try (var app = new IsolatedApplication(); var model = new ModelFixtureServer()) {

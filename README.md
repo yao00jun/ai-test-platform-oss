@@ -45,22 +45,24 @@ Java 21 与 Vue 3.5 持续测试工作台。需求文档、接口契约、固定
 
 ## 脚本一览
 
-`scripts/` 里共 12 个脚本。日常只需要 `dev.ps1`；它在内部调用运维脚本。
+`scripts/` 里共 14 个脚本。日常只需要 `dev.ps1`；它在内部调用运维脚本。
 
 **日常开发**
 
 | 脚本 | 作用 |
 | --- | --- |
 | `dev.ps1` / `dev.cmd` | 本机一键入口，子命令 `up`、`down`、`restart`、`status`、`logs`，见上文 |
-| `bootstrap-mysql.ps1` | 下载官方 MySQL 8.4 到 `.tools/`，在 `.runtime/mysql/` 初始化并启动本项目专用实例（端口 3307），创建平台库、测试库和 `aitest` 账号。`dev.ps1 up` 会自动调用 |
+| `bootstrap-mysql.ps1` | 下载官方 MySQL 8.4 到 `.tools/`，在 `.runtime/mysql/` 初始化并启动本项目专用实例（端口 3307），创建平台库、测试库和 `aitest` 账号。`dev.ps1 up` 会自动调用。源码放在机械硬盘上时，首次运行加 `-DataDirectory <SSD 目录>` 把数据目录放到固态盘（选择会记在 `connection.json`），否则每个新测试库的 65 张建表要等一分钟 |
 | `maven.ps1` | 选定 JDK 21 后调用仓库内的 Maven Wrapper，所有 Maven 命令都经它执行 |
 
 **构建与验证**
 
 | 脚本 | 作用 |
 | --- | --- |
-| `build.ps1` | 完整发行构建：前端 lint、单元测试、打包，后端 `clean verify`，把前端嵌入 JAR，输出到 `artifacts/releases/` 并生成 ZIP、`source.zip`、`release.json` 与 `SHA256SUMS`。`-SkipTests` 只用于待验收包 |
-| `verify.ps1` | 不打包，只跑全部检查：前端 lint、单元、构建，后端单元与集成测试。`-IncludeBrowser` 再以独立端口和测试库跑 Playwright 端到端流程 |
+| `build.ps1` | 完整发行构建：前端 lint、单元测试、打包，后端 `clean verify`（`distribution,nightly` profile，含全部 `slow` 集成测试），把前端嵌入 JAR，输出到 `artifacts/releases/` 并生成 ZIP、`source.zip`、`release.json` 与 `SHA256SUMS`。`-SkipTests` 只用于待验收包 |
+| `reset-test-databases.ps1` | 重建本机 MySQL 上的 `ai_test_platform_test` / `ai_test_business_test` 两个一次性测试库。`verify.ps1` 与 `build.ps1` 在跑后端测试前自动调用，避免测试库越用越大、残留的晨报排期与卡住的任务拖慢或干扰后续构建 |
+| `verify.ps1` | 不打包，只跑检查：前端 lint、单元、构建，后端单元与集成测试（默认跳过 `@Tag("slow")` 的重集成测试，约 15 分钟；`-Full` 加 `nightly` profile 跑与发行构建相同的全量套件）。`-IncludeBrowser` 再以独立端口和测试库跑 Playwright 端到端流程 |
+| `clean-workspace.ps1` | 清理构建过程文件：`.runtime/` 下的日志、探针与类快照、测试报告，以及 `artifacts/releases/` 里除最新一份之外的发行包（`-KeepReleases N` 多留几份，`-WhatIf` 只列不删）。不碰 Git 跟踪的文件 |
 | `tests/release-smoke.mjs` | 对一个发行目录做完整发行演练：随机库、中文路径、登录、生成、执行、备份与恢复 |
 | `tests/*-contract.ps1` | 运维脚本的契约测试：MySQL 客户端调用、运维脚本行为、平台登录。独立手动执行，结果记录在验收文档中 |
 
@@ -107,6 +109,19 @@ Windows 使用 PowerShell 7.4+、Java 21、MySQL 8.4。从源码构建还需要 
 
 `-SkipTests` 仅用于制作待验收包，产物会明确记录跳过状态。完整构建移除该参数。完整测试需要独立 MySQL 测试库及已安装 Chromium。
 
+### 构建速度与测试库（踩坑记录）
+
+本机实测（12 核、32 GB、源码在机械硬盘）：`verify.ps1` 约 4 分钟，`build.ps1` 含全部 249 项集成测试约 5.5 分钟。若明显更慢，按下面几条对照。
+
+| 经验 | 说明 |
+| --- | --- |
+| **MySQL 数据目录放固态盘** | 集成测试每建一个新库要执行 65 张 `CREATE TABLE`，机械盘上 55～98 秒，固态盘 1.6 秒；崩溃恢复类测试每次拉起子进程都建新库，光等建表就是几分钟。源码在机械盘上时执行 `bootstrap-mysql.ps1 -DataDirectory 'C:\Users\<你>\AppData\Local\ai-test-platform\mysql\data'`，选择记在 `.runtime/mysql/connection.json`，之后 `dev.ps1` 会沿用；已有实例先 `dev.ps1 down`，把旧 `data` 目录复制过去再执行 |
+| **机械盘不要开 3 个并行 fork** | 集成测试默认由 Failsafe 分 3 个 JVM 并行跑，各用自己的 `ai_test_platform_test_N` 库。数据目录还在机械盘上时，3 个 JVM 加子进程同时建库会把 `ProcessRecoveryIT`、`LifecycleProcessIT` 的 180 秒启动预算撑爆而超时。此时用 `verify.ps1 -Forks 1`、`build.ps1 -Forks 1`（等价于 Maven 的 `-Daitest.it.forks=1`） |
+| **测试库每轮重建** | 集成测试共用持久库，不清理会越用越大（曾积到 710 MB、6270 个项目），残留的启用晨报排期还会让后台调度器抢走模型 fixture 的应答，AI 流水线测试报「模型服务返回 HTTP 503」。`verify.ps1`、`build.ps1` 已自动调用 `reset-test-databases.ps1`；手动 `maven.ps1 verify` 前请先跑它 |
+| **一台机器同一时间只跑一轮构建** | 两轮 `build.ps1` 会共用 `backend/target` 和测试库互相污染，日志里出现两次 `Total time` 就是并发的证据。开发实例、Vite、浏览器也要在构建期间关掉 |
+| **日常用默认 `verify`，发布前用 `build.ps1`** | 21 个标了 `@Tag("slow")` 的重集成测试（崩溃恢复、容量、AI 多阶段流水线、浏览器自动化、万级资产删除）默认不跑，`verify.ps1 -Full` 或 `build.ps1` 才跑；发行包必须来自全量构建 |
+| **过程文件定期清** | `.runtime/` 的日志、类快照和 `artifacts/releases/` 的旧包会堆到十几 GB，`clean-workspace.ps1` 一键清理，只留最新发行包 |
+
 ## 模型、输入与反馈
 
 在界面「模型设置」或实例配置中填写公司的 `baseUrl`、`apiKey`、`modelName`；只连接 OpenAI 兼容的在线服务，无需本地 Ollama。配置文件示例字段见 [deploy/config.example.json](deploy/config.example.json)。未配置模型时仍可手工维护、导入和执行资产；AI 操作会留下明确的缺配置状态。
@@ -126,12 +141,12 @@ Windows 使用 PowerShell 7.4+、Java 21、MySQL 8.4。从源码构建还需要 
 | 源码与 SQL | JavaParser 3.28.2、JSqlParser 5.4 |
 | 前端 | Vue 3.5.42、Vite 8.3.0、TypeScript 6.0.3、Arco 2.58.0、Monaco 0.56.0 |
 
-完整依赖以 [backend/pom.xml](backend/pom.xml) 和 [frontend/pnpm-lock.yaml](frontend/pnpm-lock.yaml) 为准；每次发行的 CycloneDX SBOM 与依赖树清单作为附件挂在 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases)。
+完整依赖以 [backend/pom.xml](backend/pom.xml) 和 [frontend/pnpm-lock.yaml](frontend/pnpm-lock.yaml) 为准。发行 ZIP 挂在 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases)，只保留最新一份；CycloneDX SBOM、依赖树与验收附件按需另行生成，不随每次发行自动附带。
 
 ## 许可与来源
 
 - 本项目以 GPL-3.0 发布，见 [LICENSE](LICENSE)。
 - 移植自 MeterSphere 与 TestPilot-AI 的代码、其版权与许可说明见 [NOTICE.md](NOTICE.md)、[licenses/](licenses/) 与 [frontend/THIRD_PARTY_NOTICES.md](frontend/THIRD_PARTY_NOTICES.md)。
-- 发行包、SBOM、依赖清单与验收附件通过 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases) 分发。
+- 发行包通过 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases) 分发，只保留最新一份。
 
 发行包包含应用 JAR、配置示例、脚本、迁移、文档、第三方许可、对应源码及 SHA-256 清单。实例备份同时保存数据库、受管文件与有效主密钥；便携资产导出会脱敏并解除项目专属绑定，不能替代完整备份。

@@ -1,4 +1,5 @@
 package com.aitest.acceptance;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.support.IsolatedApplication;
 import com.sun.net.httpserver.HttpServer;
@@ -17,6 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /** Measurements use the public API of a fixed-size JVM, real MySQL, HTTP and Chromium. */
+@Tag("slow")
 class CapacityAcceptanceIT {
     private static final int BROWSER_SCENARIO_TIMEOUT_MS = 120_000;
     private static final int BROWSER_STEP_TIMEOUT_MS = 30_000;

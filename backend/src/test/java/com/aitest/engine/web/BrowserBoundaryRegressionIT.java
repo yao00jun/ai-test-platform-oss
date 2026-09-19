@@ -1,4 +1,5 @@
 package com.aitest.engine.web;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.asset.*;
 import com.aitest.common.JsonCodec;
@@ -22,6 +23,7 @@ import java.util.zip.ZipInputStream;
 import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 
+@Tag("slow")
 class BrowserBoundaryRegressionIT extends MySqlIntegrationTest {
     @Autowired AssetService assets;
     @Autowired ExecutionCoordinator coordinator;

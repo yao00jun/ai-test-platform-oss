@@ -1,4 +1,4 @@
-param([int]$Port = 3307, [string]$MySqlHome, [string]$Version)
+param([int]$Port = 3307, [string]$MySqlHome, [string]$Version, [string]$DataDirectory)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runtimeRoot = Join-Path $projectRoot '.runtime\mysql'
@@ -13,6 +13,7 @@ if (Test-Path -LiteralPath $connectionFile) {
     }
     $MySqlHome = $existing.home
     $Port = $existing.port
+    if ($existing.dataDirectory) { $DataDirectory = $existing.dataDirectory }
 }
 if (-not $MySqlHome) {
     $versions = if ($Version) { @($Version) } else { @('8.4.10','8.4.9','8.4.8','8.4.7','8.4.6') }
@@ -39,7 +40,11 @@ $mysqld = Join-Path $MySqlHome 'bin\mysqld.exe'
 $mysql = Join-Path $MySqlHome 'bin\mysql.exe'
 $versionOutput = & $mysqld --version
 if ($versionOutput -notmatch '8\.4\.') { throw 'This project requires MySQL 8.4 LTS.' }
-$dataDirectory = Join-Path $runtimeRoot 'data'
+# The data directory defaults to .runtime/mysql/data. On a checkout that lives on a mechanical disk pass
+# -DataDirectory <SSD path> once: every fresh test schema runs 65 CREATE TABLEs whose fsyncs cost about
+# a minute on an HDD and a few seconds on an SSD. The choice is remembered in connection.json.
+$dataDirectory = if ($DataDirectory) { [IO.Path]::GetFullPath($DataDirectory) } else { Join-Path $runtimeRoot 'data' }
+New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
 $configPath = Join-Path $runtimeRoot 'my.ini'
 $config = @"
 [mysqld]
@@ -53,6 +58,11 @@ character-set-server=utf8mb4
 collation-server=utf8mb4_unicode_ci
 default-time-zone=+00:00
 max-connections=100
+# Local development/test instance: the integration suite works on hundreds of MB of
+# random-UUID keyed rows, so keep the working set in memory instead of on the data disk,
+# and let the redo log flush once per second rather than on every test commit.
+innodb_buffer_pool_size=1G
+innodb_flush_log_at_trx_commit=2
 log-error=$($runtimeRoot.Replace('\','/'))/mysql.log
 "@
 [IO.File]::WriteAllText($configPath, $config, [Text.UTF8Encoding]::new($false))
@@ -93,6 +103,6 @@ GRANT ALL ON ai_test_business_test.* TO 'aitest'@'localhost';
     [IO.File]::WriteAllText((Join-Path $runtimeRoot 'admin.cnf'), $adminConfig, [Text.UTF8Encoding]::new($false))
     $existing = @{home=$MySqlHome;port=$Port;username='aitest';password=$appPassword;version=$versionOutput}
 }
-$settings = @{home=$MySqlHome;port=$Port;username=$existing.username;password=$existing.password;version=$versionOutput;pid=$process.Id}
+$settings = @{home=$MySqlHome;port=$Port;username=$existing.username;password=$existing.password;version=$versionOutput;pid=$process.Id;dataDirectory=$dataDirectory}
 [IO.File]::WriteAllText($connectionFile, ($settings | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 Write-Output "Project MySQL 8.4 is ready on 127.0.0.1:$Port. Credentials are in ignored .runtime/mysql/connection.json."

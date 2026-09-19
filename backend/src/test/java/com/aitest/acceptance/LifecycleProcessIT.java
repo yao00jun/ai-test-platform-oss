@@ -1,4 +1,5 @@
 package com.aitest.acceptance;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.support.IsolatedApplication;
 import org.junit.jupiter.api.Test;
@@ -6,6 +7,7 @@ import java.time.Duration;
 import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("slow")
 class LifecycleProcessIT {
     @Test void instanceTokenStopsOnlyItsOwnApplicationGracefullyAndSavedAssetsSurviveRestart() throws Exception {
         try (var app = new IsolatedApplication()) {

@@ -1,4 +1,5 @@
 package com.aitest.workbench;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.ai.ModelSettingsService;
 import com.aitest.asset.*;
@@ -18,6 +19,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 
 @TestPropertySource(properties = {"aitest.morning-brief.poll-interval-ms=100", "aitest.morning-brief.retry-delay-seconds=2"})
+@Tag("slow")
 class MorningBriefIT extends ExchangeHttpTest {
     ModelFixtureServer model;
     private final List<String> ownedProjects = new ArrayList<>();

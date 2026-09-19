@@ -45,7 +45,7 @@ public class EvalOpsService {
         result.put("schemaVersion", "aitest.evalops/v1"); result.put("projectId", project); result.put("from", window.from()); result.put("to", window.to()); result.put("capturedAt", Instant.now());
         result.put("usage", usage(calls)); result.put("generation", generation(calls));
         result.put("execution", execution(project, window)); result.put("rca", rca(project, window));
-        var models = jdbc.queryForList("SELECT DISTINCT v.model_name,v.model_version FROM ai_model_invocation v WHERE " + calls.where + " ORDER BY v.model_name,v.model_version", calls.args);
+        var models = jdbc.queryForList("SELECT DISTINCT v.model_name,v.model_version FROM ai_model_invocation v WHERE " + calls.where + " ORDER BY v.model_name,LENGTH(v.model_version),v.model_version", calls.args);
         List<Map<String, Object>> grouped = new ArrayList<>();
         for (var model : models) {
             Query selected = invocations(project, window, model.get("model_name").toString(), model.get("model_version").toString());

@@ -1,5 +1,5 @@
 #requires -Version 7.4
-param([string]$MavenSettings = '', [switch]$IncludeBrowser)
+param([string]$MavenSettings = '', [switch]$IncludeBrowser, [switch]$Full, [int]$Forks = 3)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'operations-common.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -8,7 +8,13 @@ foreach ($command in @('lint','test:unit','build')) {
     & pnpm --dir $frontend $command
     if ($LASTEXITCODE -ne 0) { throw "Frontend $command failed." }
 }
-$arguments = @('-B','-ntp','verify')
+# Day-to-day verify skips @Tag("slow") integration tests; -Full adds the nightly profile
+# and runs the same complete suite the release build (scripts/build.ps1) uses.
+# -Forks sets how many JVMs failsafe runs in parallel; use 1 when the MySQL data directory is on a mechanical disk.
+& (Join-Path $PSScriptRoot 'reset-test-databases.ps1') -Forks $Forks
+if ($LASTEXITCODE -ne 0) { throw 'Could not reset the integration-test databases.' }
+$arguments = @('-B','-ntp','verify',"-Daitest.it.forks=$Forks")
+if ($Full) { $arguments += '-Pnightly' }
 if ($MavenSettings) { $arguments += @('-s', [IO.Path]::GetFullPath($MavenSettings)) }
 & (Join-Path $PSScriptRoot 'maven.ps1') @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Backend verification failed.' }

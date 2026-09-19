@@ -210,18 +210,36 @@ public class AssetService {
         }
         List<Asset> subtree = new ArrayList<>(); collect(root, subtree);
         Set<String> ids = new HashSet<>(subtree.stream().map(Asset::id).toList());
+
+        // One conflict pass over the whole subtree instead of one SELECT per asset. Incoming
+        // references are fetched per chunk of targets and filtered in memory, so the statement
+        // never carries the whole subtree as a NOT IN list (MySQL caps placeholders at 65535).
+        List<String> idList = new ArrayList<>(ids);
+        Map<String, List<String>> outsideReferences = new java.util.HashMap<>();
+        for (List<String> chunk : partition(idList, 2000)) {
+            List<String[]> incoming = repository.jdbc().query(
+                    "SELECT r.from_id, r.to_id FROM asset_relation r JOIN asset a ON a.id=r.from_id WHERE r.to_id IN " + marks(chunk.size()) + " AND a.deleted=FALSE",
+                    (rs, n) -> new String[]{rs.getString("from_id"), rs.getString("to_id")}, chunk.toArray());
+            for (String[] relation : incoming) {
+                if (!ids.contains(relation[0])) outsideReferences.computeIfAbsent(relation[1], key -> new ArrayList<>()).add(relation[0]);
+            }
+        }
         for (Asset asset : subtree) {
-            List<String> incoming = repository.jdbc().queryForList("SELECT r.from_id FROM asset_relation r JOIN asset a ON a.id=r.from_id WHERE r.to_id=? AND a.deleted=FALSE", String.class, asset.id());
-            List<String> outside = incoming.stream().filter(ref -> !ids.contains(ref)).toList();
-            if (!outside.isEmpty()) throw new Problem(409, "REFERENCE_CONFLICT", "资产仍被其他记录引用，请先处理引用", Map.of("targetId", asset.id(), "references", outside));
+            List<String> outside = outsideReferences.get(asset.id());
+            if (outside != null) throw new Problem(409, "REFERENCE_CONFLICT", "资产仍被其他记录引用，请先处理引用", Map.of("targetId", asset.id(), "references", outside));
         }
-        for (Asset asset : subtree.reversed()) {
-            repository.jdbc().update("UPDATE asset SET deleted=TRUE,version=version+1,updated_at=? WHERE id=?", Timestamp.from(now()), asset.id());
-            repository.jdbc().update("DELETE FROM asset_relation WHERE from_id=?", asset.id());
-            Asset deleted = new Asset(asset.id(), asset.projectId(), asset.type(), asset.parentId(), asset.name(), String.valueOf(Long.parseLong(asset.version()) + 1), asset.position(), asset.source(), asset.confirmed(), asset.createdAt(), now(), asset.data());
-            repository.revise(deleted, "DELETE", "MANUAL");
-            observers.forEach(observer -> observer.deleted(deleted));
-        }
+
+        // Build the soft-deleted snapshots once, then apply every write in batches.
+        Instant deletedAt = now();
+        List<Asset> deleted = subtree.stream().map(asset -> new Asset(asset.id(), asset.projectId(), asset.type(), asset.parentId(), asset.name(),
+                String.valueOf(Long.parseLong(asset.version()) + 1), asset.position(), asset.source(), asset.confirmed(), asset.createdAt(), deletedAt, asset.data())).toList();
+        repository.jdbc().batchUpdate("UPDATE asset SET deleted=TRUE, version=version+1, updated_at=? WHERE id=?", idList, 1000,
+                (ps, aid) -> { ps.setTimestamp(1, Timestamp.from(deletedAt)); ps.setString(2, aid); });
+        repository.jdbc().batchUpdate("DELETE FROM asset_relation WHERE from_id=?", idList, 1000,
+                (ps, aid) -> ps.setString(1, aid));
+        repository.reviseBatch(deleted, "DELETE", "MANUAL");
+        // Observers still see children before parents, as the per-row implementation did.
+        deleted.reversed().forEach(d -> observers.forEach(observer -> observer.deleted(d)));
     }
     private void collect(Asset parent, List<Asset> result) {
         java.util.ArrayDeque<Asset> pending = new java.util.ArrayDeque<>(); pending.add(parent);
@@ -229,6 +247,16 @@ public class AssetService {
             Asset current = pending.removeFirst(); result.add(current);
             if (!current.type().childTypes().isEmpty()) pending.addAll(repository.all(current.projectId(), null, current.id()));
         }
+    }
+    private static String marks(int n) {
+        StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; i < n; i++) { if (i > 0) sb.append(','); sb.append('?'); }
+        return sb.append(')').toString();
+    }
+    private static List<List<String>> partition(List<String> list, int size) {
+        List<List<String>> parts = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += size) parts.add(list.subList(i, Math.min(list.size(), i + size)));
+        return parts;
     }
 
     public List<Revision> history(String projectId, String id) {

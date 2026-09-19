@@ -1,4 +1,5 @@
 package com.aitest.ai;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.asset.*;
 import com.aitest.job.Job;
@@ -19,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 
+@Tag("slow")
 class LocalRefinementIT extends MySqlIntegrationTest {
     static final ModelFixtureServer model;
     static { try { model = new ModelFixtureServer(); } catch (Exception e) { throw new ExceptionInInitializerError(e); } }

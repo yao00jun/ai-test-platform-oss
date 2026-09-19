@@ -1,4 +1,5 @@
 package com.aitest.acceptance;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.common.Ids;
 import com.aitest.support.IsolatedApplication;
@@ -22,6 +23,7 @@ import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Identical workload before and after optimization; durations are observations, not portable SLAs. */
+@Tag("slow")
 class PerformanceMeasurementIT {
     @Test void recordsQueryWriteAndDiskCostsWithoutChangingDurability() throws Exception {
         Map<String, Object> report = new LinkedHashMap<>();

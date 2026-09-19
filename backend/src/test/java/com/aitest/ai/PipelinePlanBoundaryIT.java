@@ -1,4 +1,5 @@
 package com.aitest.ai;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.ai.pipeline.PipelineService;
 import com.aitest.asset.*;
@@ -23,6 +24,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.Mockito.doAnswer;
 
+@Tag("slow")
 class PipelinePlanBoundaryIT extends ExchangeHttpTest {
     @Autowired ModelSettingsService settings;
     @Autowired PipelineService pipelines;

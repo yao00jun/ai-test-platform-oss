@@ -1,29 +1,51 @@
 #requires -Version 7.4
-param([switch]$SkipTests, [switch]$SkipInstall, [string]$MavenSettings = '', [string]$OutputDirectory = '')
+param([switch]$SkipTests, [switch]$SkipInstall, [string]$MavenSettings = '', [string]$OutputDirectory = '', [int]$Forks = 3)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $frontend = Join-Path $projectRoot 'frontend'
 $nodeVersion = (& node -p 'process.versions.node').Trim()
 if ($LASTEXITCODE -ne 0 -or [int]$nodeVersion.Split('.')[0] -lt 24) { throw 'Node.js 24 or later is required to build the frontend.' }
-$pnpmVersion = (& pnpm --version).Trim()
-$package = Get-Content -Raw -LiteralPath (Join-Path $frontend 'package.json') | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or ('pnpm@' + $pnpmVersion) -ne $package.packageManager) { throw "Install the package manager pinned in frontend/package.json: $($package.packageManager)" }
+
+# Resolve the package manager pinned in frontend/package.json (pnpm@<x>). Prefer the locally
+# generated corepack shim under .runtime/pnpm-shim (offline, no download); fall back to
+# `corepack pnpm`, which materialises the pinned version on demand. This keeps the release
+# build independent of whichever pnpm happens to be on PATH (handoff doc, section 6.1).
+$shimDir = Join-Path $projectRoot '.runtime/pnpm-shim'
+$pnpmExe = 'pnpm'; $pnpmLead = @()
+if (Test-Path -LiteralPath $shimDir) {
+    $env:PATH = "$shimDir;" + $env:PATH
+} elseif (Get-Command corepack -ErrorAction SilentlyContinue) {
+    $pnpmExe = 'corepack'; $pnpmLead = @('pnpm')
+}
+function Invoke-Pnpm { param([Parameter(ValueFromRemainingArguments)] [string[]]$PnpmArgs); & $pnpmExe @pnpmLead @PnpmArgs }
+
 Push-Location $frontend
 try {
+    $package = Get-Content -Raw -LiteralPath (Join-Path $frontend 'package.json') | ConvertFrom-Json
+    $pnpmVersion = (Invoke-Pnpm --version).Trim()
+    if ($LASTEXITCODE -ne 0 -or ('pnpm@' + $pnpmVersion) -ne $package.packageManager) { throw "Install the package manager pinned in frontend/package.json: $($package.packageManager)" }
     if (-not $SkipInstall) {
-        & pnpm install --frozen-lockfile
+        Invoke-Pnpm install --frozen-lockfile
         if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
     }
-    & pnpm lint
+    Invoke-Pnpm lint
     if ($LASTEXITCODE -ne 0) { throw 'Frontend lint failed.' }
     if (-not $SkipTests) {
-        & pnpm test:unit
+        Invoke-Pnpm test:unit
         if ($LASTEXITCODE -ne 0) { throw 'Frontend unit tests failed.' }
     }
-    & pnpm build
+    Invoke-Pnpm build
     if ($LASTEXITCODE -ne 0) { throw 'Frontend type checking or build failed.' }
 } finally { Pop-Location }
-$mavenArguments = @('-B','-ntp','-Pdistribution','clean','verify')
+# Release builds run the full integration suite: the default failsafe configuration skips
+# @Tag("slow") classes for day-to-day verify, the nightly profile puts them back.
+# -Forks: parallel failsafe JVMs (each with its own test schema); pass 1 on a mechanical-disk MySQL data directory.
+if (-not $SkipTests) {
+    # Integration tests share one persistent schema; start every release build from an empty one.
+    & (Join-Path $PSScriptRoot 'reset-test-databases.ps1') -Forks $Forks
+    if ($LASTEXITCODE -ne 0) { throw 'Could not reset the integration-test databases.' }
+}
+$mavenArguments = @('-B','-ntp','-Pdistribution,nightly','clean','verify',"-Daitest.it.forks=$Forks")
 if ($MavenSettings) { $mavenArguments += @('-s', [IO.Path]::GetFullPath($MavenSettings)) }
 if ($SkipTests) { $mavenArguments += '-DskipTests' }
 & (Join-Path $PSScriptRoot 'maven.ps1') @mavenArguments
@@ -54,7 +76,23 @@ if (Test-Path -LiteralPath $releaseRoot) { throw 'The release destination alread
 $null = New-Item -ItemType Directory -Path $releaseRoot
 [IO.File]::Copy($jar, (Join-Path $releaseRoot 'app.jar'), $false)
 [IO.File]::Copy((Join-Path $projectRoot 'deploy/config.example.json'), (Join-Path $releaseRoot 'config.example.json'), $false)
-foreach ($directory in @('docs','licenses') | Where-Object { Test-Path -LiteralPath (Join-Path $projectRoot $_) }) { Copy-Item -LiteralPath (Join-Path $projectRoot $directory) -Destination (Join-Path $releaseRoot $directory) -Recurse }
+# The release carries user-facing documentation only. Acceptance evidence,
+# implementation plans and superseded design drafts stay in the source
+# repository; they are still part of source.zip, the corresponding-source archive.
+# The public source repository ships without docs/; the release then carries the README only.
+$docsRoot = Join-Path $projectRoot 'docs'
+if (Test-Path -LiteralPath $docsRoot -PathType Container) {
+    $releaseDocs = Join-Path $releaseRoot 'docs'
+    $null = New-Item -ItemType Directory -Path $releaseDocs
+    $internalDocs = @('roadmap.md','codex-implementation-prompt.md','session-handoff-2026-09-18.md')
+    foreach ($file in Get-ChildItem -LiteralPath $docsRoot -File) {
+        if ($file.Extension -in @('.md','.sql') -and $internalDocs -notcontains $file.Name) {
+            [IO.File]::Copy($file.FullName, (Join-Path $releaseDocs $file.Name), $false)
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $docsRoot 'prompts')) { Copy-Item -LiteralPath (Join-Path $docsRoot 'prompts') -Destination (Join-Path $releaseDocs 'prompts') -Recurse }
+}
+Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses') -Destination (Join-Path $releaseRoot 'licenses') -Recurse
 $null = New-Item -ItemType Directory -Path (Join-Path $releaseRoot 'scripts'),(Join-Path $releaseRoot 'database')
 foreach ($script in @('start.ps1','stop.ps1','check.ps1','install-browsers.ps1','backup.ps1','restore.ps1','operations-common.ps1')) {
     [IO.File]::Copy((Join-Path $PSScriptRoot $script), (Join-Path $releaseRoot "scripts/$script"), $false)
@@ -71,7 +109,7 @@ foreach ($directory in @('backend/src','backend/.mvn','frontend/src','frontend/p
         foreach ($file in Get-ChildItem -LiteralPath $sourceDirectory -Force -Recurse -File) { $null = $sourceFiles.Add($file.FullName) }
     }
 }
-foreach ($relative in @('.gitignore','README.md','NOTICE.md',
+foreach ($relative in @('.gitignore','README.md','NOTICE.md','backend-pom-template.xml','frontend-package-template.json',
         'backend/pom.xml','backend/mvnw','backend/mvnw.cmd','frontend/.gitignore','frontend/README.md','frontend/THIRD_PARTY_NOTICES.md',
         'frontend/package.json','frontend/pnpm-lock.yaml','frontend/index.html','frontend/tsconfig.json','frontend/vite.config.ts',
         'frontend/vitest.config.ts','frontend/eslint.config.js','frontend/playwright.config.ts','frontend/playwright.ai.config.ts','frontend/playwright.auth.config.ts')) {

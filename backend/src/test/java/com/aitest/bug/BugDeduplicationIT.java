@@ -1,4 +1,5 @@
 package com.aitest.bug;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.ai.ModelSettingsService;
 import com.aitest.asset.*;
@@ -21,6 +22,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.doAnswer;
 
 /** A fresh diagnosis must link a repeat failure without rewriting human decisions. */
+@Tag("slow")
 class BugDeduplicationIT extends ExchangeHttpTest {
     @Autowired ExecutionCoordinator coordinator;
     @Autowired JobService jobs;

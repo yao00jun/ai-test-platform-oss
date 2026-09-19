@@ -1,4 +1,5 @@
 package com.aitest.bug;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.ai.*;
 import com.aitest.asset.*;
@@ -12,6 +13,7 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.*;
 
+@Tag("slow")
 class RcaFeedbackIT extends CodeRcaSupport {
     @Autowired AiRefinementService refinement;
     @Autowired AiChangeSetService changes;

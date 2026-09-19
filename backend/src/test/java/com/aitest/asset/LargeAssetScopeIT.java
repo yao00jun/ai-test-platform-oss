@@ -3,6 +3,7 @@ package com.aitest.asset;
 import com.aitest.common.Ids;
 import com.aitest.common.Problem;
 import com.aitest.support.MySqlIntegrationTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -16,6 +17,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.*;
 
+@Tag("slow")
 class LargeAssetScopeIT extends MySqlIntegrationTest {
     @Autowired AssetService assets;
     @Autowired JdbcTemplate jdbc;

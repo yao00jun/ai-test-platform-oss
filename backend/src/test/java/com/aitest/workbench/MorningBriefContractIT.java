@@ -1,14 +1,35 @@
 package com.aitest.workbench;
 
 import com.aitest.exchange.ExchangeHttpTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 
 class MorningBriefContractIT extends ExchangeHttpTest {
+    private String projectId;
+
+    // Root-cause fix (handoff doc 6.3): every test below writes an enabled morning-brief
+    // schedule for its own project. Without this hook the enabled schedule lingered in the
+    // shared ai_test_platform_test database, and the application's background scheduler later
+    // re-dispatched it (model service HTTP 503 / Awaitility timeouts) during subsequent builds.
+    // Reset the schedule to disabled after each test so nothing enabled ever survives the class.
+    @AfterEach
+    void resetMorningBriefSchedule() throws Exception {
+        if (projectId == null) return;
+        var state = request("GET", path(projectId), null);
+        if (state.statusCode() != 200) { projectId = null; return; } // project already removed by the test
+        var schedule = object(state);
+        if (Boolean.TRUE.equals(schedule.get("enabled"))) {
+            request("PUT", path(projectId), config(String.valueOf(schedule.get("version")), false));
+        }
+        projectId = null;
+    }
+
     @Test void scheduleStartsDisabledAndConfigurationUsesCompareAndSet() throws Exception {
-        String project = project().id(), path = path(project);
+        String project = projectId = project().id();
+        String path = path(project);
         var first = request("GET", path, null);
         assertThat(first.statusCode()).isEqualTo(200);
         assertThat(object(first)).containsEntry("version", "0").containsEntry("enabled", false).containsEntry("nextFireAt", null);
@@ -23,7 +44,8 @@ class MorningBriefContractIT extends ExchangeHttpTest {
     }
 
     @Test void invalidTimeTimezoneTypesAndUnknownFieldsCannotChangeSettings() throws Exception {
-        String project = project().id(), path = path(project);
+        String project = projectId = project().id();
+        String path = path(project);
         assertThat(request("PUT", path, config("0", false)).statusCode()).isEqualTo(200);
         Map<String, Object> original = object(request("GET", path, null));
         for (var bad : List.of(Map.entry("time", "8:00"), Map.entry("time", "24:00"), Map.entry("timezone", "No/Such_Zone"),
@@ -35,7 +57,7 @@ class MorningBriefContractIT extends ExchangeHttpTest {
     }
 
     @Test void historyIsEmptyUntilDispatchedAndScopedToAnActiveProject() throws Exception {
-        String project = project().id();
+        String project = projectId = project().id();
         var response = request("GET", "/api/projects/" + project + "/morning-brief/history?offset=0&limit=20", null);
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(object(response)).containsEntry("items", List.of()).containsEntry("total", 0);

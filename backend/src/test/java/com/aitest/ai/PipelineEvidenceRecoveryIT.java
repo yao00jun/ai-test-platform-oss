@@ -1,4 +1,5 @@
 package com.aitest.ai;
+import org.junit.jupiter.api.Tag;
 
 import com.aitest.ai.pipeline.PipelineService;
 import com.aitest.asset.*;
@@ -14,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 
+@Tag("slow")
 class PipelineEvidenceRecoveryIT extends ExchangeHttpTest {
     @Autowired ModelSettingsService settings;
     @Autowired PipelineService pipelines;
