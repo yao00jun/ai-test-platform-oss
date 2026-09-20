@@ -1,152 +1,291 @@
-# AI-Test-Platform
+# AI-Test-Platform 使用手册
 
-Java 21 与 Vue 3.5 持续测试工作台。需求文档、接口契约、固定源码和 DDL 可以共同生成测试资产；HTTP、SQL 与 Playwright 负责实际执行，运行快照、附件和缺陷发生记录保留证据。采用 Spring Boot 单体服务、MySQL 8.4 和本地受管文件，浏览器及 PDF 使用有界独立工作进程。
+AI-Test-Platform 是一个装在自己电脑上的测试工作台：把需求文档、接口定义、源码和数据库表结构交给它，它用 AI 帮你写测试用例、接口测试、场景脚本和网页自动化脚本；写完由你审核、修改，再交给它真正去执行 HTTP 请求、SQL 和浏览器操作，并把结果、截图和缺陷记录下来。AI 只出草稿，采纳与否由人决定。
 
-登录卡片及页面右上角的太阳/月亮按钮切换浅色、暗色主题。首次访问跟随系统配色，手动选择后在当前浏览器保存并跨标签页同步；弹窗、抽屉和 Monaco 编辑器随之切换，未保存的表单与反馈草稿保持。
+这份手册面向没有编程经验的使用者，按「准备 → 下载 → 启动 → 日常使用 → 看日志 → 排查问题」的顺序写。开发者请直接看最后一节。
 
-**AI 草稿由人裁决。** 全局反馈产生可选择的变更集；单条用例、单句 SQL、单个 UI 步骤的「🪄 局部 AI 调优」可连续多轮原地替换。每轮基于当前版本，保留目标 ID、位置与关联，版本冲突时保留人工修改，非目标资产不被重写。支持纯人工编辑、排序、删除及导入导出。
+---
 
-源码 `3333116e10a7` 的前端 60 项单元、后端 110 项单元、241 项真实集成，以及 64 项普通和 3 项认证浏览器流程全部通过。同一发行包通过启用认证的安装/备份恢复演练和保留原数据的实例升级。
+## 1. 准备一台电脑
 
-2026-09-16 增量提供浅色/暗色主题，并优化 SSE、工作台统计与批量导入：相同本地负载下空闲 SSE 查询减少约 92%、工作台统计查询减少约 81%，千条导入中位耗时由 7.4 秒降到 4.2 秒（本机 HDD 测量，不构成 SLA）。
+| 项目 | 要求 |
+| --- | --- |
+| 操作系统 | Windows 10 / 11（64 位）。Linux 见第 9 节 |
+| 内存 | 8 GB 以上 |
+| 磁盘 | 至少 5 GB 空闲，最好是固态盘 |
+| 网络 | 第一次启动需要联网下载约 900 MB 的组件，之后可以离线使用（AI 功能除外） |
 
-可直接运行的发行包（内嵌前端的 JAR、脚本、迁移、SBOM 与校验清单）见 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases)。公司模型与实际业务环境需自行配置，协议 fixture 的通过不代表具体模型的生成质量。
+**不需要提前安装任何软件。** Java、数据库、浏览器内核都会在第一次启动时自动下载到软件目录下的 `.tools` 文件夹里，卸载时整个目录删掉即可，不会在系统里留下东西。
 
-## 八个模块
+唯一可能需要的是 PowerShell 7。Windows 11 通常自带；如果没有，启动脚本会自动用系统的 winget 安装，只需要在弹出的窗口里点「是」。
+
+---
+
+## 2. 下载
+
+有两种下载方式，二选一。**没有特别原因就选方式 A。**
+
+### 方式 A：下载发行包（推荐）
+
+1. 打开 <https://github.com/yao00jun/ai-test-platform-oss/releases>。
+2. 找到最上面的版本，点开 **Assets**，下载名字像 `ai-test-platform-1.0.0-xxxxxxxx.zip` 的文件（约 400 MB）。
+3. 右键这个 zip → **全部解压**，解压到一个你记得住的文件夹，例如 `D:\ai-test-platform`。
+
+解压后文件夹里应该有：`启动.cmd`、`停止.cmd`、`查看状态.cmd`、`查看日志.cmd`、`备份.cmd`、`app.jar`、`config.example.json`、`scripts`、`docs` 等。
+
+### 方式 B：下载源码
+
+适合想自己修改或打包的人。打开 <https://github.com/yao00jun/ai-test-platform-oss>，点绿色的 **Code** 按钮 → **Download ZIP**，解压。源码第一次启动会多下载 Node.js 并自己打包程序，比方式 A 多花 10 分钟左右。
+
+### 放在哪里
+
+- 中文和空格路径都可以，例如 `D:\测试平台`。
+- 不要放在桌面、OneDrive、坚果云等会自动同步的目录里，同步会锁住数据库文件。
+- 不要放在 U 盘或网络盘上。
+
+---
+
+## 3. 第一次启动
+
+1. 打开解压后的文件夹，**双击 `启动.cmd`**。
+2. 如果 Windows 弹出蓝色的「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。这是因为脚本没有购买微软的数字签名，不是病毒。
+3. 会出现一个黑色窗口，按顺序显示 6 步：
+
+   ```
+   ==> 1/6 Java 21
+   ==> 2/6 MySQL 8.4
+   ==> 3/6 实例配置
+   ==> 4/6 程序包
+   ==> 5/6 Playwright 浏览器内核
+   ==> 6/6 后端服务
+   ✔ 平台已就绪：http://127.0.0.1:8080
+   ```
+
+   第一次会在第 1、2、5 步下载文件，各需要几分钟，黄色文字会告诉你正在下载什么。请耐心等待，不要关窗口。
+4. 看到 **✔ 平台已就绪** 后，浏览器会自动打开 <http://127.0.0.1:8080>，黑窗口随后自动关闭。这是正常的：程序在后台继续运行。
+5. 第二次以后启动只需要十几秒。
+
+第一次启动共下载这些东西，全部来自官方网站并校验过指纹：
+
+| 组件 | 大小 | 用途 |
+| --- | --- | --- |
+| Java 21（Eclipse Temurin） | 约 200 MB | 运行程序 |
+| MySQL 8.4 | 约 270 MB | 保存你的项目、用例和执行记录 |
+| Chromium 浏览器内核 | 约 400 MB | 执行网页自动化和生成 PDF |
+| Node.js 24（只有源码方式需要） | 约 30 MB | 打包前端页面 |
+
+如果电脑上已经装了 Java 21 或 MySQL 8.4，脚本会直接使用，不再下载。
+
+---
+
+## 4. 日常使用
+
+文件夹里的几个 `.cmd` 文件就是全部操作，双击即可：
+
+| 双击 | 作用 |
+| --- | --- |
+| `启动.cmd` | 启动平台并打开网页。已经在运行时再双击不会重复启动 |
+| `停止.cmd` | 停止平台和数据库。关机前建议先双击它 |
+| `查看状态.cmd` | 显示数据库、后端、模型配置是否正常，以及日志文件在哪 |
+| `查看日志.cmd` | 实时滚动显示后端日志，关闭窗口即可退出 |
+| `备份.cmd` | 把数据库和附件完整备份到 `instance\backups`，备份期间平台会短暂停止再自动恢复 |
+
+平台的网址固定是 <http://127.0.0.1:8080>，只能在这台电脑上打开。想让同事在局域网访问，见第 8 节。
+
+### 配置 AI 模型
+
+不配置模型也能用：手工写用例、导入导出、执行接口和网页测试都正常，只是「AI 生成」「AI 诊断」按钮会提示缺少模型。
+
+配置方法：打开网页 → 右上角 **模型设置** → 填写公司给你的三项信息：
+
+| 填写项 | 说明 |
+| --- | --- |
+| 服务地址（baseUrl） | 例如 `https://api.example.com/v1`，只支持 OpenAI 兼容的在线服务 |
+| API Key | 公司发的密钥，保存后加密存放在你的数据库里 |
+| 模型名称 | 例如 `gpt-4o`、`qwen-plus`，以公司提供的名字为准 |
+
+填完点「测试连接」，通过后保存即可。
+
+### 界面主题
+
+登录卡片和页面右上角的太阳/月亮按钮切换浅色、暗色。首次跟随系统，手动选择后记在当前浏览器里。
+
+---
+
+## 5. 看日志
+
+出问题时，日志是最重要的线索。
+
+**最简单的方法：双击 `查看日志.cmd`。** 窗口会实时显示后端最新的日志，新内容不断追加。看完关掉窗口就行。
+
+**日志文件在哪：**
+
+| 文件 | 内容 |
+| --- | --- |
+| `instance\logs\application-日期-时间.log` | 后端主日志。每次启动新建一个，文件名里的时间就是启动时间 |
+| `instance\logs\application-日期-时间.err.log` | 后端的错误输出，通常为空；启动失败时先看它 |
+| `.runtime\mysql\mysql.log` | 数据库日志。数据库启动失败时看它 |
+| `.runtime\dev\vite.log` | 只有开发者开热更新时才有 |
+
+**怎么看：** 用记事本打开，拉到最底部。正常的日志每行以时间开头，中间是 `INFO`。出错的行是 `ERROR` 或 `WARN`，下面往往跟着一段以 `Caused by:` 开头的说明，那一行就是原因。把出错那几行截图给开发者，比描述现象有用得多。
+
+---
+
+## 6. 出错了怎么办
+
+先双击 `查看状态.cmd`，它会告诉你数据库和后端是不是在运行。然后对照下表。
+
+| 现象 | 原因 | 怎么办 |
+| --- | --- | --- |
+| 双击 `启动.cmd` 黑窗口一闪就没了，网页也没打开 | 脚本出错后窗口应该会停住等你按键。如果真的一闪而过，多半是 Windows 拦截了 | 右键 `启动.cmd` → 属性 → 勾选下方的「解除锁定」→ 确定，再双击 |
+| 提示「本机还没有 PowerShell 7」后安装失败 | 电脑没有 winget，或公司网络限制 | 打开 <https://aka.ms/powershell> 下载 PowerShell 7 的 `.msi` 安装，然后再双击 `启动.cmd` |
+| 「无法下载 Java 21 / MySQL 8.4」 | 网络不通或被公司防火墙拦住 | 换一个网络（手机热点也行）重试；或找人把提示里的文件下载好，放到 `.tools` 文件夹里再双击启动 |
+| 「端口 8080 已被其他程序占用」 | 另一个程序在用 8080 | 用记事本打开 `instance\config.json`，把 `"port": 8080` 改成 `8090`，保存后重新启动，网址相应变成 `http://127.0.0.1:8090` |
+| 「MySQL 启动后立即退出」 | 3307 端口被占，或上次没有正常关闭 | 先双击 `停止.cmd`，再双击 `启动.cmd`。还不行就打开 `.runtime\mysql\mysql.log` 看最后几行 |
+| 「程序启动后退出了」或「启动超时」 | 后端没起来 | 打开提示里给出的 `.err.log` 和 `.log`，找 `ERROR` 或 `Caused by` 那几行 |
+| 网页打不开、显示「无法访问此网站」 | 后端没在运行 | 双击 `查看状态.cmd` 确认；显示未运行就双击 `启动.cmd` |
+| 浏览器内核安装失败 | 网络问题 | 不影响其他功能。网络好的时候再双击 `启动.cmd`，它会重试 |
+| 网页自动化或 PDF 报「浏览器未安装」 | 上面那一步没成功 | 同上 |
+| AI 生成失败，提示模型错误 | 模型地址、密钥或名称不对，或公司服务不可用 | 网页 → 模型设置 → 测试连接，按提示修改 |
+| 黑窗口里中文显示成方块或问号 | 窗口字体不支持 | 右键窗口标题栏 → 属性 → 字体，改成「新宋体」或「Microsoft YaHei Mono」。不影响程序运行 |
+| 磁盘空间越来越少 | 日志和临时文件堆积 | 开发者用 `aitest.ps1 clean` 清理；普通使用者可以删除 `instance\logs` 里旧的日志文件 |
+| 想彻底重来 | | 先双击 `停止.cmd`，然后删除 `.runtime`、`instance`、`data` 三个文件夹。**这会删掉所有项目数据**，删之前先双击 `备份.cmd` |
+
+如果表里没有你的情况，把这三样东西发给开发者：`查看状态.cmd` 的截图、黑窗口里红色文字的截图、`instance\logs` 里最新的两个日志文件。
+
+---
+
+## 7. 备份、恢复和升级
+
+### 备份
+
+双击 `备份.cmd`。它会先停止平台，把数据库导出、附件复制到 `instance\backups\backup-日期-时间-xxxx` 文件夹，再自动把平台启动回来。整个文件夹就是一份完整备份，复制到别的地方保存即可。
+
+备份里包含解密密钥和数据库密码，请像对待公司数据一样保管，不要发到公开的地方。
+
+### 恢复
+
+恢复是把一份备份还原到一个**新的、空的**位置，不会覆盖当前正在用的数据。需要打开 PowerShell 敲命令，步骤如下（把路径换成你自己的）：
+
+1. 双击 `停止.cmd`，再双击 `启动.cmd`，让数据库处于运行状态（只需要数据库，平台本身开着也没关系）。
+2. 在软件文件夹里，按住 Shift 点右键 → 「在此处打开 PowerShell 窗口」，粘贴下面的命令，创建一个空数据库：
+
+   ```powershell
+   cd .runtime\mysql
+   "CREATE DATABASE ai_test_restored CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; GRANT ALL ON ai_test_restored.* TO 'aitest'@'localhost';" | ..\..\.tools\mysql-8.4.10-winx64\bin\mysql.exe --defaults-file=admin.cnf
+   cd ..\..
+   ```
+
+3. 新建一个文件夹作为新实例，例如 `D:\恢复实例`，把 `instance\config.json` 复制进去，用记事本打开，把 `database.url` 里的 `ai_test_platform` 改成 `ai_test_restored`，把 `port` 改成 `8090`，把 `"storage"` 改成 `"data"`。
+4. 执行恢复，然后启动这个新实例：
+
+   ```powershell
+   .\scripts\aitest.ps1 restore -BackupDirectory 'D:\ai-test-platform\instance\backups\backup-20260919-202535-41b9205e' -InstanceDirectory 'D:\恢复实例'
+   .\scripts\aitest.ps1 start -InstanceDirectory 'D:\恢复实例'
+   ```
+
+5. 浏览器打开 <http://127.0.0.1:8090> 检查数据。确认无误后，可以继续用这个实例，也可以停掉它。
+
+### 升级到新版本
+
+1. 双击 `备份.cmd`，再双击 `停止.cmd`。
+2. 下载新版本的 zip，解压到一个新文件夹。
+3. 把旧文件夹里的 `instance`、`data`、`.runtime`、`.tools` 四个文件夹**整个复制**到新文件夹里（`.tools` 复制过去可以省掉重新下载）。
+4. 在新文件夹里双击 `启动.cmd`。第一次启动会自动升级数据库结构。
+
+如果升级后有问题，回到旧文件夹双击 `启动.cmd` 即可继续用旧版；旧版的数据在旧文件夹里没有被改动。
+
+---
+
+## 8. 让同事一起用（可选）
+
+默认只能本机访问，因为没有设置密码。要开放给局域网：
+
+1. 双击 `停止.cmd`。
+2. 用记事本打开 `instance\config.json`，改三处：
+
+   ```json
+   "bind": "0.0.0.0",
+   "security": { "enabled": true, "username": "admin", "password": "至少12位的密码", "sessionMinutes": 30, "secureCookie": false },
+   ```
+
+3. 双击 `启动.cmd`。同事在浏览器输入 `http://你的电脑IP:8080`，用上面的账号密码登录。
+
+电脑 IP 可以在 `查看状态.cmd` 之外通过 Windows 设置 → 网络 → 属性里看到。只有一个账号，所有人共用；这个平台面向个人或小团队，没有多用户权限管理。
+
+---
+
+## 9. 在 Linux 服务器上运行
+
+下载和解压同第 2 节。然后在解压后的目录里执行：
+
+```bash
+chmod +x scripts/aitest.sh
+./scripts/aitest.sh up        # 首次会自动下载 Java 21、MySQL 8.4、Chromium 到 .tools/
+./scripts/aitest.sh status    # 查看状态
+./scripts/aitest.sh logs      # 看日志，Ctrl+C 退出
+./scripts/aitest.sh backup    # 备份
+./scripts/aitest.sh down      # 停止
+```
+
+需要系统自带的 `bash`、`curl`、`tar`、`xz`、`python3`（Ubuntu、Debian、CentOS 默认都有）。MySQL 还需要 `libaio` 库，Ubuntu 上脚本会自动补齐；其他发行版按提示 `sudo dnf install libaio` 即可。Chromium 缺少系统库时用 `./scripts/aitest.sh install-browsers --with-deps`（需要 root）。选项都用 `--小写-连字符` 写法，例如 `--instance-directory /srv/aitest`。
+
+---
+
+## 10. 平台功能一览
 
 | 模块 | 主要能力 |
 | --- | --- |
-| 工作台 | 真实质量指标、可配置卡片、AI 质量报告、自动晨报、EvalOps |
+| 工作台 | 质量指标、可配置卡片、AI 质量报告、自动晨报、EvalOps |
 | 项目管理 | 项目与环境、需求文档、源码/DDL 固定快照、模型与数据源配置 |
 | 测试用例 | 列表、模块树、脑图、独立步骤、人工评审与多轮反馈 |
-| 接口测试 | OpenAPI/Swagger、Postman、cURL、HAR，断言、提取、鉴权与契约 Diff |
+| 接口测试 | OpenAPI/Swagger、Postman、cURL、HAR 导入，断言、提取、鉴权与契约 Diff |
 | 场景自动化 | HTTP→SQL 场景链、变量作用域、数据集及 DDT、SQL 校验 |
 | Playwright UI | 步骤与 DSL、语义定位器、frame/popup、附件、录制导入与独立 Java 导出 |
 | 测试计划 | 混合执行、排期、不可变报告、人工项录入、定向回归 |
 | 缺陷管理 | 手工录单、失败去重与发生历史、代码 RCA、修复建议、人工评价 |
 
-八模块的 AI、人工 CRUD、模板与多格式往返均支持。导入先预检再原子提交。历史运行、评价及投递事实由系统记录，不通过可编辑资产导入文件伪造。
+AI 草稿由人裁决：全局反馈产生可选择的变更集；单条用例、单句 SQL、单个 UI 步骤可以多轮原地调优，每轮基于当前版本，人工修改优先。各类型导入格式见发行包 `docs/import-templates-guide.md`。
 
-## 一键启动（源码目录）
+需求支持本地路径、拖拽上传或粘贴；绝对路径指运行程序那台电脑上的文件。源码与 DDL 先导入成固定版本，再用于影响分析、生成和诊断；源文件后来改变不会改写历史证据。静态源码线索与模型建议仍需实际执行验证，代码 RCA 的补丁只是供人审阅的建议，不会自动修改业务源码。
 
-在仓库根目录双击 `scripts\dev.cmd`，或在 PowerShell 7 中执行：
+---
 
-```powershell
-.\scripts\dev.ps1            # 等同 up：MySQL → 配置 → JAR（缺失时自动打包）→ 浏览器内核 → 后端 → 打开 http://127.0.0.1:8080
-.\scripts\dev.ps1 down       # 停止 Vite、后端与项目 MySQL
-.\scripts\dev.ps1 restart    # 保留 MySQL，重启后端
-.\scripts\dev.ps1 status     # 查看 MySQL / 后端 / 模型 / Vite 状态与日志位置
-.\scripts\dev.ps1 logs       # 实时跟踪后端日志，Ctrl+C 退出
-```
+## 11. 给开发者
 
-常用开关：`up -Dev` 额外启动 Vite 热更新并改为打开 5173；`up -Build` 先重新打包 JAR；`-NoBrowser` 不弹浏览器；`down -KeepMysql` 保留数据库；`logs -Errors` 看错误输出。`dev.cmd` 双击等于 `up`，也可 `dev.cmd down`。这个入口只面向源码目录，不进入发行包。
+### 一个脚本
 
-**首次启动会自动下载什么。** 需要预装的只有 Java 21、PowerShell 7.4+、Node.js 24+ 和 `pnpm@11.24.0`。其余工具由脚本按需从官方源下载到 Git 忽略的 `.tools/`：MySQL 8.4 压缩包约 270 MB（解压后 1.2 GB，仅在本机没有项目 MySQL 时下载）、Playwright Chromium 约 400 MB、Maven 3.9 约 9 MB。已装有 MySQL 8.4 的机器可用 `bootstrap-mysql.ps1 -MySqlHome '<安装目录>'` 直接复用；已有 Playwright 浏览器可把 `instance/config.json` 的 `paths.browsers` 指向它。使用发行包时不需要 Node.js 和 Maven，也不会下载 MySQL，需自备一个 MySQL 8.4 数据库。
-
-## 脚本一览
-
-`scripts/` 里共 14 个脚本。日常只需要 `dev.ps1`；它在内部调用运维脚本。
-
-**日常开发**
-
-| 脚本 | 作用 |
-| --- | --- |
-| `dev.ps1` / `dev.cmd` | 本机一键入口，子命令 `up`、`down`、`restart`、`status`、`logs`，见上文 |
-| `bootstrap-mysql.ps1` | 下载官方 MySQL 8.4 到 `.tools/`，在 `.runtime/mysql/` 初始化并启动本项目专用实例（端口 3307），创建平台库、测试库和 `aitest` 账号。`dev.ps1 up` 会自动调用。源码放在机械硬盘上时，首次运行加 `-DataDirectory <SSD 目录>` 把数据目录放到固态盘（选择会记在 `connection.json`），否则每个新测试库的 65 张建表要等一分钟 |
-| `maven.ps1` | 选定 JDK 21 后调用仓库内的 Maven Wrapper，所有 Maven 命令都经它执行 |
-
-**构建与验证**
-
-| 脚本 | 作用 |
-| --- | --- |
-| `build.ps1` | 完整发行构建：前端 lint、单元测试、打包，后端 `clean verify`（`distribution,nightly` profile，含全部 `slow` 集成测试），把前端嵌入 JAR，输出到 `artifacts/releases/` 并生成 ZIP、`source.zip`、`release.json` 与 `SHA256SUMS`。`-SkipTests` 只用于待验收包 |
-| `reset-test-databases.ps1` | 重建本机 MySQL 上的 `ai_test_platform_test` / `ai_test_business_test` 两个一次性测试库。`verify.ps1` 与 `build.ps1` 在跑后端测试前自动调用，避免测试库越用越大、残留的晨报排期与卡住的任务拖慢或干扰后续构建 |
-| `verify.ps1` | 不打包，只跑检查：前端 lint、单元、构建，后端单元与集成测试（默认跳过 `@Tag("slow")` 的重集成测试，约 15 分钟；`-Full` 加 `nightly` profile 跑与发行构建相同的全量套件）。`-IncludeBrowser` 再以独立端口和测试库跑 Playwright 端到端流程 |
-| `clean-workspace.ps1` | 清理构建过程文件：`.runtime/` 下的日志、探针与类快照、测试报告，以及 `artifacts/releases/` 里除最新一份之外的发行包（`-KeepReleases N` 多留几份，`-WhatIf` 只列不删）。不碰 Git 跟踪的文件 |
-| `tests/release-smoke.mjs` | 对一个发行目录做完整发行演练：随机库、中文路径、登录、生成、执行、备份与恢复 |
-| `tests/*-contract.ps1` | 运维脚本的契约测试：MySQL 客户端调用、运维脚本行为、平台登录。独立手动执行，结果记录在验收文档中 |
-
-**运维（随发行包分发，面向单个实例）**
-
-每个脚本都接受 `-InstanceDirectory`，用于操作默认 `instance/` 之外的实例目录。
-
-| 脚本 | 作用 |
-| --- | --- |
-| `check.ps1` | 启动前体检：确认 Java 21、MySQL 8.4 可连接、存储目录可写、Chromium 是否安装、模型配置是否填写。`-TestModel` 向正在运行实例的实际模型发一次短请求 |
-| `install-browsers.ps1` | 用 JAR 内匹配版本的 Playwright CLI 安装浏览器内核到配置的目录，默认 Chromium。`-Browsers chromium,firefox,webkit` 可多选，`-DryRun` 只预览 |
-| `start.ps1` | 以隐藏子进程启动后端 JAR，口令和模型 key 经环境变量传入而非命令行；等待健康检查通过，记录 PID、日志路径与停止令牌到 `run/state.json`。首次启动由 Flyway 建表。端口被占用时直接报错，不结束他人进程 |
-| `stop.ps1` | 通过本机停止令牌请求后端优雅关闭，最长等待 90 秒。`-Force` 仅结束身份核对通过的本实例进程树 |
-| `backup.ps1` | 先优雅停止实例，再用 `mysqldump` 导出平台库、复制受管文件与主密钥，生成带 SHA-256 的 `manifest.json`。默认备份后自动重启，`-LeaveStopped` 保持停止。备份含解密密钥，需按数据库备份同等保护 |
-| `restore.ps1` | 把一份完整备份恢复到一个新的空实例：校验哈希、路径、密钥和迁移版本后导入。不覆盖原实例；失败会写 `run/restore-incomplete.json` 并阻止启动 |
-| `operations-common.ps1` | 上述脚本共用的函数库，不直接运行 |
-
-## 本地运行
-
-Windows 使用 PowerShell 7.4+、Java 21、MySQL 8.4。从源码构建还需要 Node.js 24+ 与 `pnpm@11.24.0`。发行 JAR 已包含前端，运行时不需要 Node.js 或 Maven。
-
-发行目录先复制 `config.example.json` 为 `instance/config.json`，配置一个空的专用 MySQL 数据库及独立账号。然后执行：
+`scripts/` 里只有两个脚本：Windows 用 `aitest.ps1`，Linux 用 `aitest.sh`，命令相同。根目录的 `*.cmd` 只是给非开发者双击用的壳。
 
 ```powershell
-.\scripts\check.ps1
-.\scripts\install-browsers.ps1
-.\scripts\start.ps1
-# 浏览器打开 http://127.0.0.1:8080
-.\scripts\stop.ps1
+.\scripts\aitest.ps1 up            # = 启动.cmd；-Dev 额外起 Vite 热更新并打开 5173；-Build 先重新打包；-NoBrowser 不弹浏览器
+.\scripts\aitest.ps1 down          # = 停止.cmd；-KeepMysql 保留数据库
+.\scripts\aitest.ps1 restart | status | logs [-Errors] [-Vite] | check [-TestModel]
+.\scripts\aitest.ps1 verify        # 前端 lint/单测/构建 + 后端单测和快速集成测试，约 4～7 分钟
+.\scripts\aitest.ps1 verify -Full  # 加上 @Tag("slow") 的重集成测试，与发行构建相同
+.\scripts\aitest.ps1 verify -IncludeBrowser   # 再以独立端口跑 Playwright 端到端
+.\scripts\aitest.ps1 build         # 完整发行构建，输出到 artifacts\releases（= 打包发行.cmd）
+.\scripts\aitest.ps1 clean [-WhatIf]          # 清理 .runtime 过程文件和旧发行包
+.\scripts\aitest.ps1 mysql [-DataDirectory D:\ssd\mysql]   # 启动/初始化项目 MySQL；机械盘首次可把数据目录指到固态盘
+.\scripts\aitest.ps1 maven -B -ntp verify     # 参数原样传给仓库内的 Maven Wrapper
 ```
 
-`start.ps1` 默认监听本机。首次启动由 Flyway 应用 V1–V24 表结构与索引；不要手动执行历史 SQL 或修改已应用的迁移。日志、进程身份与配置均归属于所选实例。中文和含空格的路径使用 PowerShell 引号。
+前端命令统一经 `corepack` 使用 `frontend/package.json` 钉住的 pnpm 版本，本机装的是哪个 pnpm 无关紧要。`scripts/tests/` 下是运维脚本的契约测试和发行演练脚本，手动执行。运行、构建、测试库、备份恢复和性能复测的细节见发行包 `docs/operations.md`。
 
-远程监听需在实例配置中启用 `security.enabled` 并设置工作空间账号和密码。会话过期时保留当前标签页的未保存编辑，重新登录后可继续；主动退出会提示清理这些草稿。配置字段见 [deploy/config.example.json](deploy/config.example.json) 与下文「模型、输入与反馈」。
-
-源码开发可以使用已有 MySQL，或通过 `scripts/bootstrap-mysql.ps1` 创建本项目专用的本地 8.4 实例；本地凭据保存在 Git 忽略的 `.runtime/mysql/`。构建和联调命令：
-
-```powershell
-.\scripts\build.ps1
-.\scripts\dev.ps1
-# 完整后端与前端检查；浏览器检查使用独立测试库和模型协议 fixture
-.\scripts\verify.ps1 -IncludeBrowser
-```
-
-`-SkipTests` 仅用于制作待验收包，产物会明确记录跳过状态。完整构建移除该参数。完整测试需要独立 MySQL 测试库及已安装 Chromium。
-
-### 构建速度与测试库（踩坑记录）
-
-本机实测（12 核、32 GB、源码在机械硬盘）：`verify.ps1` 约 4 分钟，`build.ps1` 含全部 249 项集成测试约 5.5 分钟。若明显更慢，按下面几条对照。
-
-| 经验 | 说明 |
-| --- | --- |
-| **MySQL 数据目录放固态盘** | 集成测试每建一个新库要执行 65 张 `CREATE TABLE`，机械盘上 55～98 秒，固态盘 1.6 秒；崩溃恢复类测试每次拉起子进程都建新库，光等建表就是几分钟。源码在机械盘上时执行 `bootstrap-mysql.ps1 -DataDirectory 'C:\Users\<你>\AppData\Local\ai-test-platform\mysql\data'`，选择记在 `.runtime/mysql/connection.json`，之后 `dev.ps1` 会沿用；已有实例先 `dev.ps1 down`，把旧 `data` 目录复制过去再执行 |
-| **机械盘不要开 3 个并行 fork** | 集成测试默认由 Failsafe 分 3 个 JVM 并行跑，各用自己的 `ai_test_platform_test_N` 库。数据目录还在机械盘上时，3 个 JVM 加子进程同时建库会把 `ProcessRecoveryIT`、`LifecycleProcessIT` 的 180 秒启动预算撑爆而超时。此时用 `verify.ps1 -Forks 1`、`build.ps1 -Forks 1`（等价于 Maven 的 `-Daitest.it.forks=1`） |
-| **测试库每轮重建** | 集成测试共用持久库，不清理会越用越大（曾积到 710 MB、6270 个项目），残留的启用晨报排期还会让后台调度器抢走模型 fixture 的应答，AI 流水线测试报「模型服务返回 HTTP 503」。`verify.ps1`、`build.ps1` 已自动调用 `reset-test-databases.ps1`；手动 `maven.ps1 verify` 前请先跑它 |
-| **一台机器同一时间只跑一轮构建** | 两轮 `build.ps1` 会共用 `backend/target` 和测试库互相污染，日志里出现两次 `Total time` 就是并发的证据。开发实例、Vite、浏览器也要在构建期间关掉 |
-| **日常用默认 `verify`，发布前用 `build.ps1`** | 21 个标了 `@Tag("slow")` 的重集成测试（崩溃恢复、容量、AI 多阶段流水线、浏览器自动化、万级资产删除）默认不跑，`verify.ps1 -Full` 或 `build.ps1` 才跑；发行包必须来自全量构建 |
-| **过程文件定期清** | `.runtime/` 的日志、类快照和 `artifacts/releases/` 的旧包会堆到十几 GB，`clean-workspace.ps1` 一键清理，只留最新发行包 |
-
-## 模型、输入与反馈
-
-在界面「模型设置」或实例配置中填写公司的 `baseUrl`、`apiKey`、`modelName`；只连接 OpenAI 兼容的在线服务，无需本地 Ollama。配置文件示例字段见 [deploy/config.example.json](deploy/config.example.json)。未配置模型时仍可手工维护、导入和执行资产；AI 操作会留下明确的缺配置状态。
-
-需求支持本地路径、拖拽上传或粘贴。绝对路径指**后端运行机器**上的文件；远程浏览器使用上传。源码与 DDL 先导入成固定版本，随后用于影响分析、生成、反馈和诊断。源文件改变不会改写历史证据。缺少数据库、页面或可信源码证据时，相关阶段显示配置缺口，支持补充后恢复。
-
-全局反馈先预览新增/修改/删除和关联依赖，再选择性原子采纳。局部调优仅允许目标字段变更；迟到响应、取消、重复提交、并发人工修改和撤销都有持久化版本保护。SQL 或 UI 改动涉及依赖不兼容时，要求使用包含关联项的全局变更集。
-
-静态源码线索与模型建议仍需实际执行验证；反射、运行时路由、动态 SQL 和未知语法会保留未解析信息或被校验拒绝，不承诺绝对准确率。代码 RCA 的补丁是供人工审阅的建议，不自动修改业务源码。
-
-## 当前锁定版本
+### 当前锁定版本
 
 | 范围 | 实际采用 |
 | --- | --- |
-| 后端 | Java 21.0.11、Spring Boot 4.1.1、Spring AI 2.0.1 |
+| 后端 | Java 21、Spring Boot 4.1.1、Spring AI 2.0.1 |
 | 执行与存储 | MySQL 8.4.10、Playwright Java 1.62.0、POI 5.5.1、PDFBox 3.0.8、Flexmark 0.64.8 |
 | 源码与 SQL | JavaParser 3.28.2、JSqlParser 5.4 |
 | 前端 | Vue 3.5.42、Vite 8.3.0、TypeScript 6.0.3、Arco 2.58.0、Monaco 0.56.0 |
 
-完整依赖以 [backend/pom.xml](backend/pom.xml) 和 [frontend/pnpm-lock.yaml](frontend/pnpm-lock.yaml) 为准。发行 ZIP 挂在 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases)，只保留最新一份；CycloneDX SBOM、依赖树与验收附件按需另行生成，不随每次发行自动附带。
+完整依赖以 [backend/pom.xml](backend/pom.xml) 和 [frontend/pnpm-lock.yaml](frontend/pnpm-lock.yaml) 为准。
 
-## 许可与来源
+### 文档与许可
 
-- 本项目以 GPL-3.0 发布，见 [LICENSE](LICENSE)。
-- 移植自 MeterSphere 与 TestPilot-AI 的代码、其版权与许可说明见 [NOTICE.md](NOTICE.md)、[licenses/](licenses/) 与 [frontend/THIRD_PARTY_NOTICES.md](frontend/THIRD_PARTY_NOTICES.md)。
-- 发行包通过 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases) 分发，只保留最新一份。
+- 架构、API 契约、数据库与迁移、运行手册、源码分析、计划排期、群通知、晨报、EvalOps、提示词等使用者文档随发行包的 `docs/` 目录分发，见 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases)。
+- 本项目以 GPL-3.0 发布，见 [LICENSE](LICENSE)。移植自 MeterSphere 与 TestPilot-AI 的代码、其版权与许可说明见 [NOTICE.md](NOTICE.md)、[licenses/](licenses/) 与 [frontend/THIRD_PARTY_NOTICES.md](frontend/THIRD_PARTY_NOTICES.md)。
 
-发行包包含应用 JAR、配置示例、脚本、迁移、文档、第三方许可、对应源码及 SHA-256 清单。实例备份同时保存数据库、受管文件与有效主密钥；便携资产导出会脱敏并解除项目专属绑定，不能替代完整备份。
+发行包包含应用 JAR、配置示例、脚本、迁移、面向使用者的文档、第三方许可、对应源码及 SHA-256 清单；验收记录与实施计划只留在源码仓库。公司模型与实际业务环境尚未配置，协议 fixture 的通过不代表公司模型的生成质量。

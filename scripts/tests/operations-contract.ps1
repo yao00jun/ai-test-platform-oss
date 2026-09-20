@@ -1,6 +1,6 @@
 #requires -Version 7.4
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../operations-common.ps1')
+. (Join-Path $PSScriptRoot '../aitest.ps1')
 $testRoot = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) ('.runtime/ops-contract-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $testRoot
 function Assert-Contract([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }

@@ -51,7 +51,7 @@ public final class IsolatedApplication implements AutoCloseable {
         } else {
             Path configPath = root.resolve(".runtime/mysql/connection.json"), adminPath = root.resolve(".runtime/mysql/admin.cnf");
             if (!Files.isRegularFile(configPath) || !Files.isRegularFile(adminPath))
-                throw new IllegalStateException("Run scripts/bootstrap-mysql.ps1 or provide an empty AI_TEST_PROCESS_DB_URL schema");
+                throw new IllegalStateException("Run scripts/aitest.ps1 mysql or provide an empty AI_TEST_PROCESS_DB_URL schema");
             Map<String, Object> config = json.map(Files.readString(configPath));
             username = config.get("username").toString(); password = config.get("password").toString();
             if (!username.matches("[A-Za-z0-9_]+")) throw new IllegalStateException("Unexpected local test account name");

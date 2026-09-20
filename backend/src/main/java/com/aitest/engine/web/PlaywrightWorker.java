@@ -23,7 +23,7 @@ public final class PlaywrightWorker {
         try (BufferedWriter events = Files.newBufferedWriter(directory.resolve("events.ndjson")); Playwright playwright = Playwright.create()) {
             Map<String, Object> options = request.scenario().data();
             BrowserType type = switch (Values.text(options, "browser", "CHROMIUM")) { case "FIREFOX" -> playwright.firefox(); case "WEBKIT" -> playwright.webkit(); default -> playwright.chromium(); };
-            if (!Files.isRegularFile(Path.of(type.executablePath()))) throw new Problem(409, "BROWSER_NOT_INSTALLED", "浏览器未安装，请运行 scripts/install-browsers.ps1 并选择对应浏览器");
+            if (!Files.isRegularFile(Path.of(type.executablePath()))) throw new Problem(409, "BROWSER_NOT_INSTALLED", "浏览器未安装，请运行 scripts/aitest.ps1 install-browsers 并选择对应浏览器");
             try (Browser browser = type.launch(new BrowserType.LaunchOptions().setHeadless(Values.bool(options, "headless", true)).setTimeout(30000));
                  BrowserContext browserContext = browser.newContext(new Browser.NewContextOptions().setAcceptDownloads(true)
                          .setViewportSize(Values.integer(options, "viewportWidth", 1440, 320, 7680), Values.integer(options, "viewportHeight", 900, 200, 4320))

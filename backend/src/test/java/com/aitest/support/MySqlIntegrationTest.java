@@ -26,7 +26,7 @@ public abstract class MySqlIntegrationTest {
             registry.add("spring.datasource.password", () -> System.getenv("AI_TEST_DB_PASSWORD"));
         } else {
             Path file = Path.of("../.runtime/mysql/connection.json");
-            if (!Files.exists(file)) throw new IllegalStateException("Real MySQL 8.4 is required: run scripts/bootstrap-mysql.ps1 or set AI_TEST_INTEGRATION_DB_URL.");
+            if (!Files.exists(file)) throw new IllegalStateException("Real MySQL 8.4 is required: run scripts/aitest.ps1 mysql or set AI_TEST_INTEGRATION_DB_URL.");
             Map<?, ?> config = new ObjectMapper().readValue(file.toFile(), Map.class);
             registry.add("spring.datasource.url", () -> "jdbc:mysql://127.0.0.1:" + config.get("port") + "/" + SCHEMA + "?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true");
             registry.add("spring.datasource.username", () -> config.get("username"));

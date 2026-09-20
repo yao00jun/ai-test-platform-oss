@@ -53,7 +53,7 @@ async function sql(schema, query) {
   return command(mysql, [`--defaults-file=${adminFile}`, '--no-login-paths', '--batch', '--skip-column-names', '--raw', ...(schema ? [schema] : [])], { input: query })
 }
 async function script(name, instance, extra = [], expected = 0) {
-  return command('pwsh.exe', ['-NoProfile', '-File', path.join(release, 'scripts', name), '-InstanceDirectory', instance, ...extra], { expected })
+  return command('pwsh.exe', ['-NoProfile', '-File', path.join(release, 'scripts/aitest.ps1'), name, '-InstanceDirectory', instance, ...extra], { expected })
 }
 async function response(base, route, method = 'GET', body) {
   const session = sessions.get(base)
@@ -177,9 +177,9 @@ try {
     config.paths = { storage: 'data', browsers: path.join(root, '.tools/playwright-1.62.0'), localFileRoots: [sourceDirectory] }
     await mkdir(instances[index]); await writeFile(path.join(instances[index], 'config.json'), JSON.stringify(config, null, 2)); configs.push(config)
   }
-  await script('install-browsers.ps1', instances[0], ['-DryRun'])
-  await script('check.ps1', instances[0])
-  await script('start.ps1', instances[0])
+  await script('install-browsers', instances[0], ['-DryRun'])
+  await script('check', instances[0])
+  await script('start', instances[0])
   const base = `http://127.0.0.1:${configs[0].port}`
   for (const route of ['/', '/projects', '/cases', '/api-tests', '/scenarios', '/ui-tests', '/plans', '/bugs']) {
     invariant((await bytes(base, route)).toString().includes('id="app"'), `Packaged Vue route failed: ${route}`)
@@ -263,10 +263,10 @@ try {
   completed('Packaged HTTP/SQL/Chromium mixed plan passed; screenshots and JSON/HTML/PDF/ZIP reports downloaded')
 
   replies.push('OK')
-  await script('check.ps1', instances[0], ['-TestModel'])
+  await script('check', instances[0], ['-TestModel'])
   await logout(base)
 
-  await script('backup.ps1', instances[0], ['-DestinationDirectory', path.join(evidence, '一致备份'), '-LeaveStopped'])
+  await script('backup', instances[0], ['-DestinationDirectory', path.join(evidence, '一致备份'), '-LeaveStopped'])
   await stopped(base)
   const backups = await readdir(path.join(evidence, '一致备份'))
   invariant(backups.length === 1, 'Expected one complete backup')
@@ -276,12 +276,12 @@ try {
   const configBackup = path.join(backup, 'configuration.json'), originalConfig = await readFile(configBackup)
   assert.deepEqual(JSON.parse(originalConfig).security, configs[0].security)
   await writeFile(configBackup, Buffer.concat([originalConfig, Buffer.from('tampered')]))
-  await script('restore.ps1', instances[1], ['-BackupDirectory', backup], 1)
+  await script('restore', instances[1], ['-BackupDirectory', backup], 1)
   assert.equal(await sql(schemas[1], 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE();'), '0')
   await writeFile(configBackup, originalConfig)
   const badManifest = JSON.parse(originalManifest); badManifest.files[0].path = '../outside'
   await writeFile(manifestPath, JSON.stringify(badManifest))
-  await script('restore.ps1', instances[1], ['-BackupDirectory', backup], 1)
+  await script('restore', instances[1], ['-BackupDirectory', backup], 1)
   await writeFile(manifestPath, originalManifest)
 
   const failedBackup = path.join(evidence, '失败 SQL 备份')
@@ -291,16 +291,16 @@ try {
   const failingManifest = JSON.parse(originalManifest), sqlEntry = failingManifest.files.find(item => item.path === 'database.sql')
   sqlEntry.bytes = failingSql.length; sqlEntry.sha256 = hash(failingSql)
   await writeFile(path.join(failedBackup, 'manifest.json'), JSON.stringify(failingManifest))
-  await script('restore.ps1', instances[2], ['-BackupDirectory', failedBackup], 1)
+  await script('restore', instances[2], ['-BackupDirectory', failedBackup], 1)
   invariant((await readFile(path.join(instances[2], 'run/restore-incomplete.json'), 'utf8')).includes('IMPORT_DATABASE'), 'Failed restore did not preserve its phase')
   assert.equal(await sql(schemas[2], 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE();'), '1')
-  await script('start.ps1', instances[2], [], 1)
+  await script('start', instances[2], [], 1)
   completed('Stopped-instance backup created; checksum/path tampering rejected; partial SQL restore blocks startup')
 
-  await script('restore.ps1', instances[1], ['-BackupDirectory', backup])
+  await script('restore', instances[1], ['-BackupDirectory', backup])
   assert.deepEqual(await readFile(path.join(instances[0], 'data/.master-key')), await readFile(path.join(instances[1], 'data/.master-key')))
   await writeFile(path.join(sourceDirectory, 'Known.java'), 'class ChangedAfterBackup {}')
-  await script('start.ps1', instances[1])
+  await script('start', instances[1])
   const restored = `http://127.0.0.1:${configs[1].port}`
   await login(restored, configs[1].security)
   assert.deepEqual(await json(restored, `/api/projects/${project}/assets/${target.id}`), target)
@@ -317,7 +317,7 @@ try {
   assert.equal((await json(restored, `/api/projects/${project}/runs/${rerun.runId}`)).status, 'PASSED')
   assert.deepEqual(await json(restored, runRoute), runBefore)
   await logout(restored)
-  await script('stop.ps1', instances[1])
+  await script('stop', instances[1])
   await stopped(restored)
   assert.equal(businessRequests, 2); assert.equal(modelRequests, 5); assert.equal(replies.length, 0)
   result.authentication = { enabled: true, sessionRotation: true, csrf: true, logout: true, authenticatedModelCheck: true, restoreRequiresLogin: true }
@@ -331,7 +331,7 @@ try {
 } finally {
   const cleanupErrors = []
   for (const instance of instances) {
-    try { await script('stop.ps1', instance, ['-Force']) } catch (error) { cleanupErrors.push(error.message) }
+    try { await script('stop', instance, ['-Force']) } catch (error) { cleanupErrors.push(error.message) }
   }
   fixture.closeAllConnections()
   await new Promise(resolve => fixture.close(resolve))

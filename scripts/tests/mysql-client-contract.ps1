@@ -1,6 +1,6 @@
 #requires -Version 7.4
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../operations-common.ps1')
+. (Join-Path $PSScriptRoot '../aitest.ps1')
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $connection = Get-Content -Raw -LiteralPath (Join-Path $projectRoot '.runtime/mysql/connection.json') | ConvertFrom-Json
 $testRoot = Join-Path $projectRoot ('.runtime/mysql-client-contract-' + [guid]::NewGuid().ToString('N') + '/中文 实例')

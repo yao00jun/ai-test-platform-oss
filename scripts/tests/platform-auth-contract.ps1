@@ -1,6 +1,6 @@
 #requires -Version 7.4
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../operations-common.ps1')
+. (Join-Path $PSScriptRoot '../aitest.ps1')
 $testRoot = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) ('.runtime/auth-config-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $testRoot
 $configPath = Join-Path $testRoot 'config.json'

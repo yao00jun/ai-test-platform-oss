@@ -2,6 +2,7 @@
 .vscode/
 .worktrees/
 .superpowers/
+.workbuddy/
 .runtime/
 .tools/
 data/

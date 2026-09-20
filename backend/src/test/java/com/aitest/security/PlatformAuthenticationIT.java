@@ -156,7 +156,7 @@ class PlatformAuthenticationIT extends ExchangeHttpTest {
 
     @Test void theLocalOperationsClientAuthenticatesAndLogsOutThroughTheProtectedApi() throws Exception {
         Path script = Files.createTempFile(Path.of("../.runtime"), "auth-operations-", ".ps1");
-        String common = Path.of("../scripts/operations-common.ps1").toAbsolutePath().normalize().toString().replace("'", "''");
+        String common = Path.of("../scripts/aitest.ps1").toAbsolutePath().normalize().toString().replace("'", "''");
         Files.writeString(script, """
                 $ErrorActionPreference = 'Stop'
                 . '%s'
