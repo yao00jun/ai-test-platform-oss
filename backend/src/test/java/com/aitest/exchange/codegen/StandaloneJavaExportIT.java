@@ -83,6 +83,8 @@ class StandaloneJavaExportIT extends MySqlIntegrationTest {
     private int run(List<String> command, String log) throws Exception {
         ProcessBuilder process = new ProcessBuilder(command).directory(output.toFile()).redirectErrorStream(true).redirectOutput(output.resolve(log).toFile());
         process.environment().put("PLAYWRIGHT_BROWSERS_PATH", Path.of("../.tools/playwright-1.62.0").toAbsolutePath().normalize().toString());
+        // The exported program only launches Chromium; never let Playwright.create() download Firefox/WebKit inside the 45 s budget (CI installs Chromium only).
+        process.environment().put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
         Process child = process.start();
         try {
             boolean completed = child.waitFor(45, TimeUnit.SECONDS);
