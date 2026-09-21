@@ -864,7 +864,11 @@ function Get-PlaywrightCliCommand([string]$JarPath, [string]$JavaHome = '') {
     if (-not (Test-Path -LiteralPath $classpathFile) -or (Get-Item -LiteralPath $classpathFile).LastWriteTime -lt $pom.LastWriteTime) {
         if ((Invoke-Maven -B -ntp -q dependency:build-classpath "-Dmdep.outputFile=$classpathFile" -DincludeScope=runtime) -ne 0) { throw '无法生成 Playwright 的 classpath。' }
     }
-    return @{ Java = $java; Arguments = @('-cp', (Get-Content -Raw -LiteralPath $classpathFile).Trim(), 'com.microsoft.playwright.CLI') }
+    # classpath 有近 300 项，直接放命令行会超过 Windows 的长度上限；写成 Java 参数文件（@file）传入。
+    $argumentFile = Join-Path $Script:RuntimeRoot 'playwright-cli.args'
+    $classpath = (Get-Content -Raw -LiteralPath $classpathFile).Trim().Replace('\', '/').Replace('"', '\"')
+    [IO.File]::WriteAllText($argumentFile, "-cp`n`"$classpath`"`ncom.microsoft.playwright.CLI`n", $Script:Utf8)
+    return @{ Java = $java; Arguments = @("@$argumentFile") }
 }
 
 # 问 Playwright 它需要哪些内核目录（版本号由 Playwright 自己决定），再检查这些目录是否齐全。
