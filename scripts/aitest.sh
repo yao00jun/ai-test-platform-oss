@@ -23,11 +23,13 @@
 #     reset-test-db      重建集成测试库（verify/build 自动调用）
 #     maven <参数...>    用 Java 21 执行仓库内的 Maven Wrapper，参数原样传给 Maven
 #
-#   通用选项：--instance-directory DIR 操作默认 instance/ 之外的实例。
+#   通用选项：--instance-directory DIR 操作默认 instance/ 之外的实例；--offline 离线模式（缺什么直接报错，不联网下载）。
 #
-# 首次运行会自动下载缺少的工具到 .tools/（Java 21 约 190 MB、MySQL 8.4 约 80 MB、Chromium 约 170 MB、构建源码还需 Node.js 24 约 30 MB），
-# 都来自官方源并校验 SHA-256。已装好的 Java 21 / MySQL 8.4 会被直接使用。需要 bash、curl、tar、xz、python3。
+# 工具查找顺序：config.json 里填的路径 → 环境变量（JAVA_HOME、MYSQL_HOME、PLAYWRIGHT_BROWSERS_PATH）→ 包里自带的 .tools/ → 本机已安装的
+# → 最后才联网下载到 .tools/（Java 21 约 190 MB、MySQL 8.4 约 80 MB、Chromium 约 170 MB、构建源码还需 Node.js 24 约 30 MB），
+# 都来自官方源并校验 SHA-256。找到的路径会写回 instance/config.json。需要 bash、curl、tar、xz、python3。
 set -euo pipefail
+OFFLINE=0; case "${AI_TEST_OFFLINE-}" in ''|0|false) ;; *) OFFLINE=1 ;; esac
 export LC_ALL="${LC_ALL:-C.UTF-8}" LANG="${LANG:-C.UTF-8}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,6 +111,7 @@ fetch_tool() {
     if [[ -d "$target" ]]; then echo "$target"; return; fi
     mkdir -p "$TOOLS_ROOT"
     if [[ ! -f "$archive" || "$(sha256_of "$archive")" != "$sha" ]]; then
+        [[ $OFFLINE -eq 0 ]] || die "离线模式：缺少 $name。请把 $file 放到 $TOOLS_ROOT，或在 config.json 里指定已安装的路径。"
         local url downloaded=0
         for url in "$@"; do
             warn "下载 $name（$url）" >&2
@@ -123,22 +126,46 @@ fetch_tool() {
     echo "$target"
 }
 
-is_java21() { [[ -x "$1/bin/java" && -f "$1/release" ]] && grep -q 'JAVA_VERSION="21\.' "$1/release"; }
-find_java() {   # find_java [configuredJavaHome] → java 可执行文件路径，找不到返回 1
-    local candidate candidates=("${1-}" "${AI_TEST_JAVA_HOME-}" "${JAVA_HOME-}")
-    [[ -d "$TOOLS_ROOT" ]] && while IFS= read -r candidate; do candidates+=("$candidate"); done < <(find "$TOOLS_ROOT" -maxdepth 1 -type d -name 'jdk-21*' | sort -r)
-    if command -v java >/dev/null 2>&1; then candidates+=("$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"); fi
-    for candidate in /usr/lib/jvm/*21* /usr/lib/jvm/*/; do candidates+=("${candidate%/}"); done
-    for candidate in "${candidates[@]}"; do
-        [[ -n "$candidate" ]] && is_java21 "$candidate" && { echo "$candidate/bin/java"; return 0; }
+remember_source() { mkdir -p "$RUNTIME_ROOT/.sources"; printf '%s' "$2" > "$RUNTIME_ROOT/.sources/$1"; }
+recall_source() { cat "$RUNTIME_ROOT/.sources/$1" 2>/dev/null || true; }
+java_major() { [[ -x "$1/bin/java" && -f "$1/release" ]] && sed -n 's/^JAVA_VERSION="\([0-9]*\).*/\1/p' "$1/release" | head -1; }
+# 运行程序接受 Java 21 及更高（21 优先）；打包/测试只用 21。find_java [configuredJavaHome] [exact21] → java 路径，找不到返回 1
+find_java() {
+    local exact="${2:-0}" candidate major
+    local -a ordered=() sources=()
+    [[ -n "${1-}" ]] && { ordered+=("$1"); sources+=('config.json 的 javaHome'); }
+    [[ -n "${AI_TEST_JAVA_HOME-}" ]] && { ordered+=("$AI_TEST_JAVA_HOME"); sources+=('环境变量 AI_TEST_JAVA_HOME'); }
+    [[ -n "${JAVA_HOME-}" ]] && { ordered+=("$JAVA_HOME"); sources+=('环境变量 JAVA_HOME'); }
+    [[ -d "$TOOLS_ROOT" ]] && while IFS= read -r candidate; do ordered+=("$candidate"); sources+=('.tools 自带'); done < <(find "$TOOLS_ROOT" -maxdepth 1 -type d -name 'jdk-*' | sort -r)
+    local -a system=()
+    if command -v java >/dev/null 2>&1; then system+=("$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"); fi
+    for candidate in /usr/lib/jvm/*/ /opt/*jdk*/ /usr/local/*jdk*/; do [[ -d "$candidate" ]] && system+=("${candidate%/}"); done
+    # 本机装了多个版本时优先 21，其次更高版本。
+    local -a exact21=() higher=()
+    for candidate in "${system[@]}"; do
+        major="$(java_major "$candidate" || true)"; [[ -n "$major" ]] || continue
+        if [[ "$major" -eq 21 ]]; then exact21+=("$candidate"); elif [[ "$major" -gt 21 ]]; then higher+=("$candidate"); fi
+    done
+    for candidate in "${exact21[@]}" "${higher[@]}"; do ordered+=("$candidate"); sources+=('本机已安装'); done
+    local i
+    for i in "${!ordered[@]}"; do
+        candidate="${ordered[$i]}"; major="$(java_major "$candidate" || true)"
+        [[ -n "$major" && "$major" -ge 21 ]] || continue
+        [[ "$exact" -eq 1 && "$major" -ne 21 ]] && continue
+        [[ "$major" -eq 21 ]] || warn "使用的是 Java $major（$candidate）。程序按 Java 21 测试，更高版本一般可用；如遇异常请改用 21。" >&2
+        remember_source java "${sources[$i]}：$candidate（Java $major）"
+        echo "$candidate/bin/java"; return 0
     done
     return 1
 }
 java_or_install() {
     local java
-    if java="$(find_java "${1-}")"; then echo "$java"; return; fi
+    if java="$(find_java "${1-}" "${2:-0}")"; then echo "$java"; return; fi
+    [[ "${2:-0}" -eq 1 ]] && die '打包和测试需要 Java 21（正好 21）。请安装 JDK 21，或设置 AI_TEST_JAVA_HOME。'
+    [[ $OFFLINE -eq 0 ]] || die '离线模式：没有找到 Java 21 或更高版本。请安装 JDK 21，或在 config.json 的 javaHome 里填写已安装的 JDK 目录。'
     warn 'Java 21 未安装，自动下载 Eclipse Temurin JDK 21（约 190 MB，一次性）。' >&2
     local home; home="$(fetch_tool 'Java 21' "$JDK_FOLDER" "$JDK_FILE" "$JDK_SHA256" "${JDK_URLS[@]}")"
+    remember_source java ".tools 自带：$home（Java 21）"
     echo "$home/bin/java"
 }
 node_directory() {
@@ -146,8 +173,12 @@ node_directory() {
         local major; major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
         [[ "$major" -ge 24 ]] && { dirname "$(readlink -f "$(command -v node)")"; return; }
     fi
+    [[ -n "${AI_TEST_NODE_HOME-}" && -x "$AI_TEST_NODE_HOME/bin/node" ]] && { echo "$AI_TEST_NODE_HOME/bin"; return; }
     local local_node="$TOOLS_ROOT/$NODE_FOLDER"
-    [[ -x "$local_node/bin/node" ]] || { warn 'Node.js 24 未安装，自动下载到 .tools/（约 30 MB，一次性）。' >&2; local_node="$(fetch_tool 'Node.js 24' "$NODE_FOLDER" "$NODE_FILE" "$NODE_SHA256" "${NODE_URLS[@]}")"; }
+    if [[ ! -x "$local_node/bin/node" ]]; then
+        [[ $OFFLINE -eq 0 ]] || die '离线模式：没有找到 Node.js 24（打包源码需要）。请安装 Node.js 24，或设置环境变量 AI_TEST_NODE_HOME。'
+        warn 'Node.js 24 未安装，自动下载到 .tools/（约 30 MB，一次性）。' >&2; local_node="$(fetch_tool 'Node.js 24' "$NODE_FOLDER" "$NODE_FILE" "$NODE_SHA256" "${NODE_URLS[@]}")"
+    fi
     echo "$local_node/bin"
 }
 # 前端命令统一经 corepack 执行，自动使用 frontend/package.json 里钉住的 pnpm 版本。
@@ -158,7 +189,7 @@ pnpm() {
 }
 maven() {
     [[ $IS_SOURCE_TREE -eq 1 ]] || die 'maven 只能在源码目录使用。'
-    local java; java="$(java_or_install)"
+    local java; java="$(java_or_install '' 1)"
     local java_home; java_home="$(dirname "$(dirname "$java")")"
     [[ -x "$PROJECT_ROOT/backend/mvnw" ]] || chmod +x "$PROJECT_ROOT/backend/mvnw"
     JAVA_HOME="$java_home" PATH="$java_home/bin:$PATH" MAVEN_OPTS='-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Duser.language=en -Duser.country=US' \
@@ -202,16 +233,30 @@ cmd_mysql() {
         username="$(json_get "$MYSQL_CONNECTION_FILE" username)"; password="$(json_get "$MYSQL_CONNECTION_FILE" password)"
         [[ -n "$data_directory" ]] || data_directory="$(json_get "$MYSQL_CONNECTION_FILE" dataDirectory '')"
     fi
-    [[ -n "$mysql_home" || ! -x "$TOOLS_ROOT/$MYSQL_FOLDER/bin/mysqld" ]] || mysql_home="$TOOLS_ROOT/$MYSQL_FOLDER"
-    if [[ -z "$mysql_home" ]]; then
-        warn '本机没有本项目的 MySQL 8.4，自动下载官方精简包（约 80 MB，一次性）。'
-        mysql_home="$(fetch_tool 'MySQL 8.4' "$MYSQL_FOLDER" "$MYSQL_FILE" "$MYSQL_SHA256" "${MYSQL_URLS[@]}")"
+    local source=''
+    [[ -n "$mysql_home" ]] && source='指定路径'
+    [[ -n "$mysql_home" || ! -x "$TOOLS_ROOT/$MYSQL_FOLDER/bin/mysqld" ]] || { mysql_home="$TOOLS_ROOT/$MYSQL_FOLDER"; source='.tools 自带'; }
+    [[ -n "$mysql_home" || ! -f "$TOOLS_ROOT/$MYSQL_FILE" ]] || { mysql_home="$(fetch_tool 'MySQL 8.4' "$MYSQL_FOLDER" "$MYSQL_FILE" "$MYSQL_SHA256" "${MYSQL_URLS[@]}")"; source='.tools 自带'; }
+    if [[ -z "$mysql_home" ]]; then   # 本机已安装的 MySQL 8.4：MYSQL_HOME → PATH 上的 mysqld → 常见位置。只借程序文件，数据目录仍在本项目里。
+        local candidate
+        for candidate in "${MYSQL_HOME-}" "$(command -v mysqld >/dev/null 2>&1 && dirname "$(dirname "$(readlink -f "$(command -v mysqld)")")")" /usr/local/mysql /opt/mysql /usr; do
+            [[ -n "$candidate" ]] || continue
+            local bin="$candidate/bin/mysqld"; [[ -x "$bin" ]] || bin="$candidate/sbin/mysqld"; [[ -x "$bin" ]] || continue
+            if "$bin" --version 2>/dev/null | grep -q ' 8\.4\.'; then mysql_home="$candidate"; source="本机已安装"; break; fi
+        done
     fi
+    if [[ -z "$mysql_home" ]]; then
+        [[ $OFFLINE -eq 0 ]] || die '离线模式：本机没有 MySQL 8.4。请把 mysql-8.4.x-linux-glibc2.28-x86_64-minimal.tar.xz 放到 .tools/，或安装 MySQL 8.4 后设置环境变量 MYSQL_HOME。'
+        warn '本机没有 MySQL 8.4，自动下载官方精简包（约 80 MB，一次性）。'
+        mysql_home="$(fetch_tool 'MySQL 8.4' "$MYSQL_FOLDER" "$MYSQL_FILE" "$MYSQL_SHA256" "${MYSQL_URLS[@]}")"; source='.tools 自带'
+    fi
+    remember_source mysql "${source}：$mysql_home"
     local mysqld="$mysql_home/bin/mysqld" mysql="$mysql_home/bin/mysql"
-    [[ -x "$mysqld" ]] || die "找不到 $mysqld"
+    [[ -x "$mysqld" ]] || mysqld="$mysql_home/sbin/mysqld"
+    [[ -x "$mysqld" ]] || die "找不到 $mysql_home 下的 mysqld"
     ensure_libaio "$mysqld"
     local version; version="$("$mysqld" --version)"
-    [[ "$version" == *8.4.* ]] || die '本项目需要 MySQL 8.4 LTS。'
+    [[ "$version" == *8.4.* ]] || die "本项目需要 MySQL 8.4 LTS，找到的是：$version"
     [[ -n "$data_directory" ]] || data_directory="$MYSQL_RUNTIME/data"
     mkdir -p "$data_directory"
     cat > "$MYSQL_RUNTIME/my.cnf" <<EOF
@@ -512,15 +557,15 @@ cmd_check() {
     while [[ $# -gt 0 ]]; do case "$1" in
         --instance-directory) instance="$2"; shift 2 ;; --config-path) config_path="$2"; shift 2 ;; --test-model) test_model=1; shift ;; *) die "check 不认识的选项：$1" ;; esac; done
     read_config "$(resolve_instance "$instance")" "$config_path"
-    local java; java="$(find_java "$CFG_JAVA_HOME")" || die '没有找到 Java 21。运行 scripts/aitest.sh up 会自动下载，或在 config.json 的 javaHome 里填写 JDK 21 目录。'
-    echo "Java 21：$java"
+    local java; java="$(find_java "$CFG_JAVA_HOME")" || die '没有找到 Java 21 或更高版本。运行 scripts/aitest.sh up 会自动下载，或在 config.json 的 javaHome 里填写 JDK 目录。'
+    echo "Java：$(recall_source java)"
     local version; version="$(sql 'SELECT VERSION();')"
     [[ "$version" == 8.4.* ]] || die "需要 MySQL 8.4，实际连到的是 $version。"
     echo "MySQL：$version（库 $CFG_DB_NAME @ $CFG_DB_HOST:$CFG_DB_PORT）"
     mkdir -p "$CFG_STORAGE"; local probe="$CFG_STORAGE/.write-check-$$"; echo storage-check > "$probe" && rm -f "$probe"
     echo "存储目录可写：$CFG_STORAGE"
-    if [[ -d "$CFG_BROWSERS" ]] && find "$CFG_BROWSERS" -type f \( -name chrome -o -name headless_shell \) | grep -q .; then echo "Chromium 已安装：$CFG_BROWSERS"
-    else warn "配置的目录里没有 Chromium：$CFG_BROWSERS。执行 UI/PDF 前请运行 scripts/aitest.sh install-browsers（up 会自动装）。"; fi
+    local jar_for_check; if jar_for_check="$(resolve_jar '' 2>/dev/null)" && browsers_present "$CFG_BROWSERS" "$jar_for_check" "$java"; then echo "Chromium 已安装：$CFG_BROWSERS"
+    else warn "配置的目录里没有本版本需要的 Chromium：$CFG_BROWSERS。执行 UI/PDF 前请运行 scripts/aitest.sh install-browsers（up 会自动装）。"; fi
     [[ -n "$CFG_MODEL_BASE_URL" && -n "$CFG_MODEL_API_KEY" && -n "$CFG_MODEL_NAME" ]] || echo '配置文件里的模型信息不完整：手工功能都能用；界面「模型设置」里保存的模型同样有效。'
     if [[ $test_model -eq 1 ]]; then
         local pid; pid="$(managed_pid "$CFG_RUN_DIR")"; [[ -n "$pid" ]] || die '请先启动实例，再测试它实际生效的模型配置。'
@@ -538,6 +583,27 @@ cmd_check() {
         rm -f "$jar"
     fi
 }
+# 问 Playwright 它需要哪些内核目录，检查是否齐全。playwright_locations BROWSERS_PATH JAR JAVA
+playwright_locations() {
+    PLAYWRIGHT_BROWSERS_PATH="$1" "$3" -jar "$2" --playwright-cli install --dry-run chromium 2>/dev/null | sed -n 's/^ *Install location: *//p'
+}
+browsers_present() {   # browsers_present BROWSERS_PATH JAR JAVA
+    [[ -n "$1" && -d "$1" ]] || return 1
+    local location found=0
+    while IFS= read -r location; do [[ -n "$location" ]] || continue; found=1; [[ -f "$location/INSTALLATION_COMPLETE" ]] || return 1; done < <(playwright_locations "$1" "$2" "$3")
+    [[ $found -eq 1 ]]
+}
+# 找已有的 Chromium：config.json 的 paths.browsers → PLAYWRIGHT_BROWSERS_PATH → .tools 自带 → Playwright 默认目录 ~/.cache/ms-playwright
+find_browsers() {   # find_browsers CONFIGURED JAR JAVA → 目录，找不到返回 1
+    local candidate label
+    for candidate in "$1|config.json 的 paths.browsers" "${PLAYWRIGHT_BROWSERS_PATH-}|环境变量 PLAYWRIGHT_BROWSERS_PATH" "$TOOLS_ROOT/playwright-$PLAYWRIGHT_VERSION|.tools 自带" "$HOME/.cache/ms-playwright|Playwright 默认目录"; do
+        label="${candidate#*|}"; candidate="${candidate%%|*}"
+        [[ -n "$candidate" ]] || continue
+        if browsers_present "$candidate" "$2" "$3"; then remember_source browsers "$label：$candidate"; echo "$candidate"; return 0; fi
+    done
+    return 1
+}
+
 cmd_install_browsers() {
     local instance='' config_path='' jar='' dry_run=0 with_deps=0 browsers='chromium'
     while [[ $# -gt 0 ]]; do case "$1" in
@@ -548,6 +614,7 @@ cmd_install_browsers() {
     read_config "$instance" "$config_path"
     jar="$(resolve_jar "$jar")"
     local java; java="$(java_or_install "$CFG_JAVA_HOME")"
+    [[ $OFFLINE -eq 0 || $dry_run -eq 1 ]] || die "离线模式：不能联网安装浏览器内核。请把内核目录复制到 $CFG_BROWSERS，或在 config.json 的 paths.browsers 里指定已有的目录。"
     local -a args=(install); [[ $dry_run -eq 1 ]] && args+=(--dry-run); [[ $with_deps -eq 1 ]] && args+=(--with-deps)
     IFS=',' read -r -a list <<< "$browsers"; args+=("${list[@]}")
     # 国内网络：先走 npmmirror 的 Playwright 镜像，失败时 Playwright 会自动回退到官方源。
@@ -671,16 +738,38 @@ PY
 }
 
 # ---------------------------------------------------------------- 一键工作流 ----------------------------------------------------------------
-use_project_mysql() { [[ $IS_SOURCE_TREE -eq 1 || -f "$MYSQL_CONNECTION_FILE" || ! -f "$1/config.json" ]]; }
+# 没有 config.json → 用自带 MySQL；config.json 指向本机且端口等于自带实例端口（默认 3307）→ 自带；其余视为外部数据库。
+use_project_mysql() {
+    [[ -f "$1/config.json" ]] || return 0
+    local project_port=3307; [[ -f "$MYSQL_CONNECTION_FILE" ]] && project_port="$(json_get "$MYSQL_CONNECTION_FILE" port 3307)"
+    python3 - "$1/config.json" "$project_port" <<'PY'
+import json,sys
+from urllib.parse import urlsplit
+try:
+    url=json.load(open(sys.argv[1],encoding='utf-8'))['database']['url']; parts=urlsplit(url[5:])
+    sys.exit(0 if (parts.hostname in ('127.0.0.1','localhost','::1') and (parts.port or 3306)==int(sys.argv[2])) else 1)
+except Exception: sys.exit(0)
+PY
+}
 cmd_up() {
     local instance='' build=0
     while [[ $# -gt 0 ]]; do case "$1" in --instance-directory) instance="$2"; shift 2 ;; --build) build=1; shift ;; --no-browser) shift ;; *) die "up 不认识的选项：$1" ;; esac; done
     instance="$(resolve_instance "$instance")"
-    step '1/6 Java 21'; ok "$(java_or_install)"
+    local configured_java='' configured_mysql=''
+    if [[ -f "$instance/config.json" ]]; then configured_java="$(json_get "$instance/config.json" javaHome '')"; configured_mysql="$(json_get "$instance/config.json" mysqlHome '')"; fi
+    [[ $OFFLINE -eq 0 ]] || note '离线模式：只使用本机和 .tools 里已有的组件，不联网下载。'
+    step '1/6 Java 21'
+    local java; java="$(java_or_install "$configured_java")"; ok "$(recall_source java)"
     step '2/6 MySQL 8.4'
-    if use_project_mysql "$instance"; then cmd_mysql | while IFS= read -r line; do ok "$line"; done; else ok '使用 config.json 里配置的数据库'; fi
+    if use_project_mysql "$instance"; then
+        local -a mysql_args=(); [[ -n "$configured_mysql" && ! -f "$MYSQL_CONNECTION_FILE" ]] && mysql_args=(--mysql-home "$configured_mysql")
+        cmd_mysql "${mysql_args[@]}" | while IFS= read -r line; do ok "$line"; done
+        note "$(recall_source mysql)"
+    else ok '使用 config.json 里配置的数据库'; fi
     step '3/6 实例配置'
     init_config "$instance" | while IFS= read -r line; do ok "$line"; done
+    json_set "$instance/config.json" "javaHome=$(dirname "$(dirname "$java")")"
+    if use_project_mysql "$instance" && [[ -f "$MYSQL_CONNECTION_FILE" ]]; then json_set "$instance/config.json" "mysqlHome=$(json_get "$MYSQL_CONNECTION_FILE" home)"; fi
     read_config "$instance"; ok "配置文件：$CFG_CONFIG_PATH"
     step '4/6 程序包'
     local jar
@@ -695,7 +784,12 @@ cmd_up() {
     else die '这个目录既没有 app.jar，也不是源码目录。'; fi
     ok "$jar"
     step '5/6 Playwright 浏览器内核'
-    if [[ -d "$CFG_BROWSERS" ]] && find "$CFG_BROWSERS" -type f \( -name chrome -o -name headless_shell \) | grep -q .; then ok "Chromium 已就绪：$CFG_BROWSERS"
+    local browsers
+    if browsers="$(find_browsers "$CFG_BROWSERS" "$jar" "$java")"; then
+        ok "Chromium 已就绪：$(recall_source browsers)"
+        if [[ "$browsers" != "$CFG_BROWSERS" ]]; then json_set "$CFG_CONFIG_PATH" "paths.browsers=$browsers"; read_config "$instance"; fi
+    elif [[ $OFFLINE -eq 1 ]]; then
+        warn "离线模式：没有找到 Chromium 内核。UI 自动化和 PDF 功能不可用，其余功能正常。请把内核目录复制到 $CFG_BROWSERS，或在 config.json 的 paths.browsers 里指定。"
     else
         warn 'Chromium 缺失，自动安装（约 170 MB，一次性）。'
         cmd_install_browsers --instance-directory "$instance" --jar-path "$jar" | while IFS= read -r line; do ok "$line"; done \
@@ -746,6 +840,16 @@ cmd_status() {
         [[ -f "$CFG_RUN_DIR/state.json" ]] && printf '           \033[90m日志 %s\033[0m\n' "$(json_get "$CFG_RUN_DIR/state.json" stdout '')"
         if [[ -n "$CFG_MODEL_BASE_URL" && -n "$CFG_MODEL_NAME" ]]; then show 模型 1 "$CFG_MODEL_NAME @ $CFG_MODEL_BASE_URL"; else show 模型 0 '配置文件未填写；网页「模型设置」里保存的配置优先生效'; fi
     else show 后端 0 '尚无实例配置'; fi
+    printf '\033[36m环境（来源：路径）\033[0m\n'
+    local configured_java=''; [[ -f "$instance/config.json" ]] && configured_java="$(json_get "$instance/config.json" javaHome '')"
+    if find_java "$configured_java" >/dev/null 2>&1; then echo "  Java      $(recall_source java)"; else printf '  \033[33mJava      未找到 Java 21 或更高版本\033[0m\n'; fi
+    if [[ -f "$MYSQL_CONNECTION_FILE" ]]; then local home; home="$(json_get "$MYSQL_CONNECTION_FILE" home)"; echo "  MySQL     $([[ "$home" == "$TOOLS_ROOT"/* ]] && echo '.tools 自带' || echo '本机已安装')：$home"
+    elif [[ -f "$instance/config.json" ]] && ! use_project_mysql "$instance"; then echo "  MySQL     config.json 里配置的外部数据库：$CFG_DB_HOST:$CFG_DB_PORT"
+    else printf '  \033[90mMySQL     尚未准备\033[0m\n'; fi
+    if [[ -f "$instance/config.json" ]]; then
+        local jar_for_status; if jar_for_status="$(resolve_jar '' 2>/dev/null)" && java_for_status="$(find_java "$configured_java" 2>/dev/null)" && browsers_present "$CFG_BROWSERS" "$jar_for_status" "$java_for_status"; then echo "  Chromium  就绪：$CFG_BROWSERS"; else printf '  \033[33mChromium  缺失：%s\033[0m\n' "$CFG_BROWSERS"; fi
+    else printf '  \033[90mChromium  尚未配置\033[0m\n'; fi
+    echo "  离线模式  $([[ $OFFLINE -eq 1 ]] && echo '开（AI_TEST_OFFLINE）' || echo '关')"
 }
 cmd_logs() {
     local instance='' errors=0 tail=60
@@ -860,6 +964,10 @@ cmd_clean() {
 
 # ---------------------------------------------------------------- 命令分发 ----------------------------------------------------------------
 command="${1:-help}"; [[ $# -gt 0 ]] && shift
+# 通用的 --offline 开关，任何命令都可以带。
+if [[ " $* " == *" --offline "* ]]; then
+    OFFLINE=1; filtered=(); for argument in "$@"; do [[ "$argument" == --offline ]] || filtered+=("$argument"); done; set -- "${filtered[@]}"
+fi
 case "$command" in
     up) cmd_up "$@" ;; down) cmd_down "$@" ;; restart) cmd_down --keep-mysql "$@"; cmd_up "$@" ;; status) cmd_status "$@" ;; logs) cmd_logs "$@" ;;
     check) cmd_check "$@" ;; start) cmd_start "$@" ;; stop) cmd_stop "$@" ;; backup) cmd_backup "$@" ;; restore) cmd_restore "$@" ;; install-browsers) cmd_install_browsers "$@" ;;

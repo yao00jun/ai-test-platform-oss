@@ -23,11 +23,16 @@ AI-Test-Platform 唯一的 Windows 脚本。日常不用直接运行它：双击
     mysql              启动/初始化本项目专用 MySQL 8.4（-DataDirectory <固态盘目录> 首次可指定数据目录）
     reset-test-db      重建集成测试库（verify/build 自动调用）
     maven <参数...>    用 Java 21 执行仓库内的 Maven Wrapper，参数原样传给 Maven
+    offline-bundle     给已有发行目录补做离线完整包：offline-bundle -ReleaseDirectory <发行目录>
 
-  通用选项：-InstanceDirectory <目录> 操作默认 instance\ 之外的实例；up 还接受 -Dev（Vite 热更新）、-Build（先重新打包）、-NoBrowser。
+    sync-public        把本仓库的公开部分同步到公开库工作区：sync-public -PublicDirectory <目录>（-Reverse 反向同步）
 
-首次运行会自动下载缺少的工具到 .tools\（Java 21 约 200 MB、MySQL 8.4 约 270 MB、Chromium 约 400 MB、构建源码还需 Node.js 24 约 30 MB），
-都来自官方源并校验 SHA-256。已装好的 Java 21 / MySQL 8.4 会被直接使用，不重复下载。
+  通用选项：-InstanceDirectory <目录> 操作默认 instance\ 之外的实例；-Offline 离线模式（缺什么直接报错，不联网下载）；
+           up 还接受 -Dev（Vite 热更新）、-Build（先重新打包）、-NoBrowser。
+
+工具查找顺序：config.json 里填的路径 → 环境变量（JAVA_HOME、MYSQL_HOME、PLAYWRIGHT_BROWSERS_PATH）→ 包里自带的 .tools\ → 本机已安装的
+→ 最后才联网下载到 .tools\。找到的路径会写回 instance\config.json，之后只认配置文件。离线完整包（*-offline-windows.zip）自带 MySQL、
+Chromium 和 VC++ 运行库，只需本机装好 Java 21（或更高）和 PowerShell 7。
 #>
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -45,7 +50,32 @@ $Script:ViteStateFile = Join-Path $Script:RuntimeRoot 'dev/vite.json'
 $Script:Frontend = Join-Path $Script:ProjectRoot 'frontend'
 $Script:DevJar = Join-Path $Script:ProjectRoot 'backend/target/ai-test-platform-1.0.0-SNAPSHOT.jar'
 $Script:ReleaseJar = Join-Path $Script:ProjectRoot 'app.jar'
-$Script:PlaywrightVersion = '1.62.0'
+$Script:Offline = [bool]($env:AI_TEST_OFFLINE -and $env:AI_TEST_OFFLINE -ne '0' -and $env:AI_TEST_OFFLINE -ne 'false')
+$Script:VcRedistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+$Script:ToolSources = @{}   # 记录每样工具是从哪里找到的，status 里显示
+
+# Playwright 版本以源码的 pom.xml 或发行包 app.jar 里的依赖为准，不在脚本里写死；浏览器内核目录名为 .tools\playwright-<版本>。
+function Get-PlaywrightVersion {
+    if ($Script:PlaywrightVersionCache) { return $Script:PlaywrightVersionCache }
+    $version = $null
+    $pom = Join-Path $Script:ProjectRoot 'backend/pom.xml'
+    if (Test-Path -LiteralPath $pom) {
+        $match = [regex]::Match((Get-Content -Raw -LiteralPath $pom), '<playwright\.version>([^<]+)</playwright\.version>')
+        if ($match.Success) { $version = $match.Groups[1].Value.Trim() }
+    }
+    if (-not $version) {
+        foreach ($jar in @($Script:ReleaseJar, $Script:DevJar)) {
+            if (-not (Test-Path -LiteralPath $jar)) { continue }
+            $archive = [IO.Compression.ZipFile]::OpenRead($jar)
+            try { $entry = $archive.Entries | Where-Object { $_.FullName -match '^BOOT-INF/lib/playwright-(\d+\.\d+\.\d+)\.jar$' } | Select-Object -First 1 } finally { $archive.Dispose() }
+            if ($entry) { $version = [regex]::Match($entry.FullName, 'playwright-(\d+\.\d+\.\d+)\.jar').Groups[1].Value; break }
+        }
+    }
+    if (-not $version) { throw '无法确定 Playwright 版本：源码目录需要 backend/pom.xml，发行包需要 app.jar。' }
+    $Script:PlaywrightVersionCache = $version
+    return $version
+}
+function Get-DefaultBrowsersDirectory { return Join-Path $Script:ToolsRoot ('playwright-' + (Get-PlaywrightVersion)) }
 
 # 固定版本的官方下载源。第一个地址不通时依次尝试后面的；下载后校验 SHA-256。
 $Script:Downloads = @{
@@ -56,6 +86,31 @@ $Script:Downloads = @{
         urls = @('https://npmmirror.com/mirrors/node/v24.21.0/node-v24.21.0-win-x64.zip', 'https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip') }
     mysql = @{ folder = 'mysql-8.4.10-winx64'; file = 'mysql-8.4.10-winx64.zip'; sha256 = '3b950db31c33fb59252568c012bd9ee5fac50811e778ca7c8f1a0dc91686cd6f'
         urls = @('https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.10-winx64.zip') }
+}
+
+# 后台子进程（mysqld、java、Vite）不能继承本脚本的标准句柄：脚本的输出被管道捕获时（CI、另一个脚本、`| tee`），
+# 继承了句柄的子进程会让调用方一直等到它退出。启动子进程前临时关掉三个标准句柄的可继承标志。
+Add-Type -Namespace AiTest -Name Handles -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetHandleInformation(IntPtr hObject, uint dwMask, uint dwFlags);
+'@
+function Set-StdHandleInheritance([bool]$Inherit) {
+    foreach ($id in -10, -11, -12) {
+        $handle = [AiTest.Handles]::GetStdHandle($id)
+        if ($handle -ne [IntPtr]::Zero -and $handle -ne [IntPtr](-1)) { $null = [AiTest.Handles]::SetHandleInformation($handle, 1, $(if ($Inherit) { 1 } else { 0 })) }
+    }
+}
+function Start-DetachedProcess {
+    # 与 Start-Process 参数相同，只是子进程不继承本脚本的标准句柄。
+    param([string]$FilePath, [string[]]$ArgumentList, [string]$WorkingDirectory, [hashtable]$Environment, [string]$RedirectStandardOutput, [string]$RedirectStandardError)
+    $parameters = @{ FilePath = $FilePath; WindowStyle = 'Hidden'; PassThru = $true }
+    if ($ArgumentList) { $parameters.ArgumentList = $ArgumentList }
+    if ($WorkingDirectory) { $parameters.WorkingDirectory = $WorkingDirectory }
+    if ($Environment) { $parameters.Environment = $Environment }
+    if ($RedirectStandardOutput) { $parameters.RedirectStandardOutput = $RedirectStandardOutput }
+    if ($RedirectStandardError) { $parameters.RedirectStandardError = $RedirectStandardError }
+    Set-StdHandleInheritance $false
+    try { return Start-Process @parameters } finally { Set-StdHandleInheritance $true }
 }
 
 function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
@@ -156,28 +211,60 @@ function Initialize-AiTestConfiguration([string]$PackageRoot, [string]$InstanceD
         $config.database.url = "jdbc:mysql://127.0.0.1:$($local.port)/ai_test_platform?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8"
         $config.database.username = $local.username; $config.database.password = $local.password; $config.mysqlHome = $local.home
         $config.paths.storage = Join-Path $PackageRoot 'data'
-        $config.paths.browsers = Join-Path $PackageRoot ".tools/playwright-$Script:PlaywrightVersion"
+        $config.paths.browsers = Get-DefaultBrowsersDirectory
     }
     $null = New-Item -ItemType Directory -Path $InstanceDirectory -Force
     [IO.File]::WriteAllText($configFile, ($config | ConvertTo-Json -Depth 10), $Script:Utf8)
     Write-Output "已生成实例配置：$configFile"
 }
 
-function Find-AiTestJava([string]$ConfiguredJavaHome = '') {
-    $candidates = @($ConfiguredJavaHome, $env:AI_TEST_JAVA_HOME, $env:JAVA_HOME)
-    if (Test-Path -LiteralPath $Script:ToolsRoot) { $candidates += Get-ChildItem -LiteralPath $Script:ToolsRoot -Directory | Where-Object Name -Like 'jdk-21*' | Sort-Object Name -Descending | Select-Object -ExpandProperty FullName }
+# 把自动找到的路径写回 config.json（只改有变化的字段），之后每次启动都走同一条路，用户也能直接改。
+function Update-AiTestConfiguration([string]$ConfigPath, [hashtable]$Values) {
+    if (-not (Test-Path -LiteralPath $ConfigPath)) { return }
+    $config = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json -AsHashtable
+    $changed = $false
+    foreach ($key in $Values.Keys) {
+        $parts = $key.Split('.'); $node = $config
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) { if ($node[$parts[$i]] -isnot [Collections.IDictionary]) { $node[$parts[$i]] = @{} }; $node = $node[$parts[$i]] }
+        if ([string]$node[$parts[-1]] -ne [string]$Values[$key]) { $node[$parts[-1]] = $Values[$key]; $changed = $true }
+    }
+    if ($changed) { [IO.File]::WriteAllText($ConfigPath, ($config | ConvertTo-Json -Depth 10), $Script:Utf8) }
+}
+
+function Get-JavaMajor([string]$JavaHome) {
+    $release = Join-Path $JavaHome 'release'
+    if (-not (Test-Path -LiteralPath (Join-Path $JavaHome 'bin/java.exe')) -or -not (Test-Path -LiteralPath $release)) { return 0 }
+    $match = [regex]::Match((Get-Content -Raw -LiteralPath $release), 'JAVA_VERSION="(\d+)')
+    if ($match.Success) { return [int]$match.Groups[1].Value }
+    return 0
+}
+
+# 运行程序接受 Java 21 及更高版本（21 优先）；打包/测试只用 21（backend/pom.xml 的 enforcer 规则）。
+function Find-AiTestJava([string]$ConfiguredJavaHome = '', [switch]$Exact21) {
+    $ordered = [Collections.Generic.List[object]]::new()
+    foreach ($pair in @(@($ConfiguredJavaHome, 'config.json 的 javaHome'), @($env:AI_TEST_JAVA_HOME, '环境变量 AI_TEST_JAVA_HOME'), @($env:JAVA_HOME, '环境变量 JAVA_HOME'))) {
+        if ($pair[0]) { $ordered.Add(@{ Home = [string]$pair[0]; Source = $pair[1] }) }
+    }
+    if (Test-Path -LiteralPath $Script:ToolsRoot) { foreach ($dir in Get-ChildItem -LiteralPath $Script:ToolsRoot -Directory | Where-Object Name -Like 'jdk-*' | Sort-Object Name -Descending) { $ordered.Add(@{ Home = $dir.FullName; Source = '.tools 自带' }) } }
+    $system = [Collections.Generic.List[string]]::new()
     $javaCommand = Get-Command java.exe -ErrorAction SilentlyContinue
-    if ($javaCommand) { $candidates += Split-Path -Parent (Split-Path -Parent $javaCommand.Source) }
-    foreach ($vendorRoot in @('C:/Program Files/Java', 'C:/Program Files/Eclipse Adoptium', 'C:/Program Files/Microsoft', 'C:/Program Files/Zulu', 'C:/Program Files/BellSoft')) {
-        if (Test-Path -LiteralPath $vendorRoot) { $candidates += Get-ChildItem -LiteralPath $vendorRoot -Directory | Where-Object Name -Like '*jdk-21*' | Sort-Object Name -Descending | Select-Object -ExpandProperty FullName }
+    if ($javaCommand) { $system.Add((Split-Path -Parent (Split-Path -Parent $javaCommand.Source))) }
+    foreach ($vendorRoot in @('C:/Program Files/Java', 'C:/Program Files/Eclipse Adoptium', 'C:/Program Files/Microsoft', 'C:/Program Files/Zulu', 'C:/Program Files/BellSoft', 'C:/Program Files/Amazon Corretto')) {
+        if (Test-Path -LiteralPath $vendorRoot) { foreach ($dir in Get-ChildItem -LiteralPath $vendorRoot -Directory | Sort-Object Name -Descending) { $system.Add($dir.FullName) } }
     }
-    foreach ($candidate in $candidates) {
-        if (-not $candidate) { continue }
-        $release = Join-Path $candidate 'release'
-        $java = Join-Path $candidate 'bin/java.exe'
-        if ((Test-Path -LiteralPath $java) -and (Test-Path -LiteralPath $release) -and (Get-Content -Raw -LiteralPath $release) -match 'JAVA_VERSION="21\.') { return $java }
+    # 本机装了多个版本时优先 21，其次更高版本。
+    $rated = @($system | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { @{ Home = $_; Major = (Get-JavaMajor $_) } } | Where-Object { $_.Major -ge 21 })
+    foreach ($item in ($rated | Sort-Object { if ($_.Major -eq 21) { 0 } else { 1 } }, { -$_.Major })) { $ordered.Add(@{ Home = $item.Home; Source = '本机已安装' }) }
+    foreach ($candidate in $ordered) {
+        $major = Get-JavaMajor $candidate.Home
+        if ($major -lt 21) { continue }
+        if ($Exact21 -and $major -ne 21) { continue }
+        if ($major -ne 21 -and -not $Script:JavaVersionWarned) { Write-Warn "使用的是 Java $major（$($candidate.Home)）。程序按 Java 21 测试，更高版本一般可用；如遇异常请改用 21。"; $Script:JavaVersionWarned = $true }
+        $Script:ToolSources.java = "$($candidate.Source)：$($candidate.Home)（Java $major）"
+        return (Join-Path $candidate.Home 'bin/java.exe')
     }
-    throw '没有找到 Java 21。双击 启动.cmd 会自动下载到 .tools\，或在 config.json 的 javaHome 里填写已安装的 JDK 21 目录。'
+    if ($Exact21) { throw '打包和测试需要 Java 21（正好 21）。请安装 JDK 21，或在 config.json 的 javaHome / 环境变量 AI_TEST_JAVA_HOME 里指定。' }
+    throw '没有找到 Java 21 或更高版本。请安装 JDK 21（推荐 Eclipse Temurin），或在 config.json 的 javaHome 里填写已安装的 JDK 目录；联网时双击 启动.cmd 会自动下载。'
 }
 
 function Get-AiTestEnvironment($Settings, [string]$ShutdownToken = '') {
@@ -333,11 +420,12 @@ function Get-AiTestTool([string]$Name, [string]$Description) {
     $archive = Join-Path $Script:ToolsRoot $spec.file
     $valid = (Test-Path -LiteralPath $archive) -and ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ieq $spec.sha256)
     if (-not $valid) {
+        if ($Script:Offline) { throw "离线模式：缺少 $Description。请把 $($spec.file) 放到 $Script:ToolsRoot，或在 config.json 里指定已安装的路径。" }
         $downloaded = $false
         foreach ($url in $spec.urls) {
             Write-Warn "下载 $Description（$url）"
             try {
-                Invoke-WebRequest -Uri $url -OutFile $archive -TimeoutSec 1800 -MaximumRetryCount 2 -RetryIntervalSec 5
+                Invoke-WebRequest -Uri $url -OutFile $archive -ConnectionTimeoutSeconds 20 -OperationTimeoutSeconds 120 -MaximumRetryCount 2 -RetryIntervalSec 5
                 if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ieq $spec.sha256) { $downloaded = $true; break }
                 Write-Warn '下载的文件校验不通过，换下一个地址重试。'
             } catch { Write-Warn "这个地址下载失败：$($_.Exception.Message)" }
@@ -351,14 +439,17 @@ function Get-AiTestTool([string]$Name, [string]$Description) {
     return $target
 }
 
-function Get-AiTestJavaOrInstall([string]$ConfiguredJavaHome = '') {
-    try { return Find-AiTestJava $ConfiguredJavaHome } catch { }
+function Get-AiTestJavaOrInstall([string]$ConfiguredJavaHome = '', [switch]$Exact21) {
+    try { return Find-AiTestJava $ConfiguredJavaHome -Exact21:$Exact21 } catch { $reason = $_.Exception.Message }
+    if ($Script:Offline) { throw "离线模式：$reason" }
     Write-Warn 'Java 21 未安装，自动下载 Eclipse Temurin JDK 21（约 200 MB，一次性）。'
-    $home = Get-AiTestTool 'jdk' 'Java 21'
-    return (Join-Path $home 'bin/java.exe')
+    $jdkHome = Get-AiTestTool 'jdk' 'Java 21'
+    $Script:ToolSources.java = ".tools 自带：$jdkHome（Java 21）"
+    return (Join-Path $jdkHome 'bin/java.exe')
 }
 
 function Get-AiTestNodeDirectory {
+    if ($env:AI_TEST_NODE_HOME -and (Test-Path -LiteralPath (Join-Path $env:AI_TEST_NODE_HOME 'node.exe'))) { return $env:AI_TEST_NODE_HOME }
     $node = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($node) {
         $major = 0
@@ -366,7 +457,10 @@ function Get-AiTestNodeDirectory {
         if ($LASTEXITCODE -eq 0 -and $version -and [int]::TryParse($version.Split('.')[0], [ref]$major) -and $major -ge 24) { return (Split-Path -Parent $node.Source) }
     }
     $local = Join-Path $Script:ToolsRoot $Script:Downloads.node.folder
-    if (-not (Test-Path -LiteralPath (Join-Path $local 'node.exe'))) { Write-Warn 'Node.js 24 未安装，自动下载到 .tools\（约 30 MB，一次性）。'; $local = Get-AiTestTool 'node' 'Node.js 24' }
+    if (-not (Test-Path -LiteralPath (Join-Path $local 'node.exe'))) {
+        if ($Script:Offline) { throw '离线模式：没有找到 Node.js 24（打包源码需要）。请安装 Node.js 24，或设置环境变量 AI_TEST_NODE_HOME。' }
+        Write-Warn 'Node.js 24 未安装，自动下载到 .tools\（约 30 MB，一次性）。'; $local = Get-AiTestTool 'node' 'Node.js 24'
+    }
     return $local
 }
 
@@ -390,7 +484,7 @@ function Invoke-Maven {
     # 输出直接打到控制台，函数只返回 Maven 的退出码。
     [string[]]$MavenArguments = $args
     if (-not $Script:IsSourceTree) { throw 'maven 只能在源码目录使用。' }
-    $java = Get-AiTestJavaOrInstall
+    $java = Get-AiTestJavaOrInstall -Exact21
     $javaHome = Split-Path -Parent (Split-Path -Parent $java)
     $env:JAVA_HOME = $javaHome
     $env:PATH = (Join-Path $javaHome 'bin') + [IO.Path]::PathSeparator + $env:PATH
@@ -424,6 +518,49 @@ function Test-AnsiRepresentable([string]$Text) {
     return $ansi.GetString($ansi.GetBytes($Text)) -ceq $Text
 }
 
+# MySQL 的 Windows 压缩包版需要微软 VC++ 运行库（Visual C++ 2015-2022 x64）。缺失时优先用包里自带的安装程序，联网时从微软官网下载。
+function Test-VcRuntime {
+    foreach ($key in @('HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64')) {
+        if (Test-Path -LiteralPath $key) { $value = Get-ItemProperty -LiteralPath $key; if ($value.Installed -eq 1 -and [string]$value.Version -match '^v14\.(2[0-9]|[3-9][0-9])') { return $true } }
+    }
+    return $false
+}
+function Install-VcRuntime {
+    if (Test-VcRuntime) { return }
+    $installer = Join-Path $Script:ToolsRoot 'vc_redist.x64.exe'
+    if (-not (Test-Path -LiteralPath $installer)) {
+        if ($Script:Offline) { throw '离线模式：本机缺少微软 VC++ 运行库（MySQL 需要）。请把 vc_redist.x64.exe 放到 .tools\ 后重试，或先手动安装它。' }
+        Write-Warn '本机缺少微软 VC++ 运行库（MySQL 需要），从微软官网下载（约 25 MB）。'
+        $null = New-Item -ItemType Directory -Path $Script:ToolsRoot -Force
+        Invoke-WebRequest -Uri $Script:VcRedistUrl -OutFile $installer -ConnectionTimeoutSeconds 20 -OperationTimeoutSeconds 120 -MaximumRetryCount 2 -RetryIntervalSec 5
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $installer
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { Remove-Item -LiteralPath $installer -Force; throw 'vc_redist.x64.exe 的微软数字签名校验失败，已删除，请重新获取。' }
+    Write-Warn '安装 VC++ 运行库，需要管理员权限，请在弹出的窗口里点「是」……'
+    $process = Start-Process -FilePath $installer -ArgumentList @('/install', '/passive', '/norestart') -Verb RunAs -Wait -PassThru
+    if ($process.ExitCode -notin @(0, 1638, 3010)) { throw "VC++ 运行库安装失败（退出码 $($process.ExitCode)）。请手动运行 $installer 后重试。" }
+    if (-not (Test-VcRuntime)) { throw 'VC++ 运行库安装后仍未检测到，请重启电脑后重试。' }
+    Write-Ok 'VC++ 运行库已安装。'
+}
+
+# 本机已安装的 MySQL 8.4：MYSQL_HOME → PATH 上的 mysqld → 官方安装器的默认目录。只借用程序文件，数据目录仍在本项目里。
+function Find-SystemMysqlHome {
+    $candidates = [Collections.Generic.List[object]]::new()
+    if ($env:MYSQL_HOME) { $candidates.Add(@{ Home = $env:MYSQL_HOME; Source = '环境变量 MYSQL_HOME' }) }
+    $onPath = Get-Command mysqld.exe -ErrorAction SilentlyContinue
+    if ($onPath) { $candidates.Add(@{ Home = (Split-Path -Parent (Split-Path -Parent $onPath.Source)); Source = 'PATH' }) }
+    foreach ($root in @("$env:ProgramFiles\MySQL", "${env:ProgramFiles(x86)}\MySQL")) {
+        if ($root -and (Test-Path -LiteralPath $root)) { foreach ($dir in Get-ChildItem -LiteralPath $root -Directory | Where-Object Name -Like 'MySQL Server 8.4*' | Sort-Object Name -Descending) { $candidates.Add(@{ Home = $dir.FullName; Source = '本机已安装' }) } }
+    }
+    foreach ($candidate in $candidates) {
+        $mysqld = Join-Path $candidate.Home 'bin/mysqld.exe'
+        if (-not (Test-Path -LiteralPath $mysqld)) { continue }
+        $version = & $mysqld --version 2>$null
+        if ($LASTEXITCODE -eq 0 -and $version -match ' 8\.4\.') { return @{ Home = [IO.Path]::GetFullPath($candidate.Home); Source = $candidate.Source } }
+    }
+    return $null
+}
+
 function Invoke-Mysql {
     param([int]$Port = 3307, [string]$MySqlHome = '', [string]$DataDirectory = '')
     $null = New-Item -ItemType Directory -Path $Script:MysqlRuntime,$Script:ToolsRoot -Force
@@ -435,16 +572,26 @@ function Invoke-Mysql {
         $MySqlHome = $existing.home; $Port = $existing.port
         if ($existing.dataDirectory) { $DataDirectory = $existing.dataDirectory }
     }
-    if (-not $MySqlHome -and (Test-Path -LiteralPath (Join-Path $Script:ToolsRoot "$($Script:Downloads.mysql.folder)/bin/mysqld.exe"))) { $MySqlHome = Join-Path $Script:ToolsRoot $Script:Downloads.mysql.folder }
+    $source = if (-not $MySqlHome) { '' } elseif ($MySqlHome.StartsWith($Script:ToolsRoot, [StringComparison]::OrdinalIgnoreCase)) { '.tools 自带' } else { '指定路径' }
+    if (-not $MySqlHome -and (Test-Path -LiteralPath (Join-Path $Script:ToolsRoot "$($Script:Downloads.mysql.folder)/bin/mysqld.exe"))) { $MySqlHome = Join-Path $Script:ToolsRoot $Script:Downloads.mysql.folder; $source = '.tools 自带' }
+    if (-not $MySqlHome -and (Test-Path -LiteralPath (Join-Path $Script:ToolsRoot $Script:Downloads.mysql.file))) { $MySqlHome = Get-AiTestTool 'mysql' 'MySQL 8.4'; $source = '.tools 自带' }
     if (-not $MySqlHome) {
-        Write-Warn '本机没有本项目的 MySQL 8.4，自动下载官方压缩包（约 270 MB，一次性）。'
-        $MySqlHome = Get-AiTestTool 'mysql' 'MySQL 8.4'
+        $found = Find-SystemMysqlHome
+        if ($found) { $MySqlHome = $found.Home; $source = $found.Source }
     }
+    if (-not $MySqlHome) {
+        if ($Script:Offline) { throw '离线模式：本机没有 MySQL 8.4。请把 mysql-8.4.x-winx64.zip 放到 .tools\，或安装 MySQL 8.4 后设置环境变量 MYSQL_HOME。' }
+        Write-Warn '本机没有 MySQL 8.4，自动下载官方压缩包（约 270 MB，一次性）。'
+        $MySqlHome = Get-AiTestTool 'mysql' 'MySQL 8.4'; $source = '.tools 自带'
+    }
+    if ($source -eq '.tools 自带') { Install-VcRuntime }
+    $Script:ToolSources.mysql = "${source}：$MySqlHome"
     $mysqld = Join-Path $MySqlHome 'bin/mysqld.exe'
     $mysql = Join-Path $MySqlHome 'bin/mysql.exe'
     if (-not (Test-Path -LiteralPath $mysqld)) { throw "找不到 $mysqld。" }
     $versionOutput = & $mysqld --version
-    if ($versionOutput -notmatch '8\.4\.') { throw '本项目需要 MySQL 8.4 LTS。' }
+    if ($LASTEXITCODE -eq -1073741515) { throw 'mysqld 缺少系统库（通常是微软 VC++ 运行库）。请安装 .tools\vc_redist.x64.exe 或从微软官网安装 Visual C++ 2015-2022 x64 运行库后重试。' }
+    if ($versionOutput -notmatch '8\.4\.') { throw "本项目需要 MySQL 8.4 LTS，找到的是：$versionOutput" }
     # 数据目录默认在 .runtime/mysql/data。源码放在机械硬盘时可用 -DataDirectory 指到固态盘（选择会记住）：
     # 集成测试每建一个新库要执行 65 张 CREATE TABLE，机械盘约一分钟，固态盘几秒。
     $dataDirectory = if ($DataDirectory) { [IO.Path]::GetFullPath($DataDirectory) } else { Join-Path $Script:MysqlRuntime 'data' }
@@ -485,7 +632,11 @@ log-error=$($logFile.Replace('\','/'))
             & $mysqld --defaults-file=my.ini --initialize-insecure
             if ($LASTEXITCODE -ne 0) { throw "MySQL 初始化失败，详情见 $logFile" }
         }
-        $process = Start-Process -FilePath $mysqld -ArgumentList @('--defaults-file=my.ini') -WorkingDirectory $Script:MysqlRuntime -WindowStyle Hidden -PassThru
+        # --no-monitor：Windows 版 mysqld 默认先起一个监护进程再由它拉起真正的服务进程，而监护进程拼子进程命令行时不给带空格的路径加引号，
+        # 项目放在「离线 测试」这类目录下时子进程会读不到 --defaults-file。直接运行服务进程即可（我们不用 RESTART 语句）。
+        # 标准输出/错误重定向到文件：mysqld 不能继承父进程的管道，否则从 CI 或另一个脚本里调用时父进程会一直等它退出。
+        $process = Start-DetachedProcess -FilePath $mysqld -ArgumentList @('--defaults-file=my.ini', '--no-monitor') -WorkingDirectory $Script:MysqlRuntime `
+            -RedirectStandardOutput (Join-Path $Script:MysqlRuntime 'mysqld.out.log') -RedirectStandardError (Join-Path $Script:MysqlRuntime 'mysqld.err.log')
     } finally { Pop-Location }
     $ready = $false
     for ($attempt = 0; $attempt -lt 120; $attempt++) {
@@ -617,7 +768,7 @@ function Invoke-Start {
     $stderr = Join-Path $settings.LogDirectory "application-$identity.err.log"
     $arguments = @('-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8', '-Dstderr.encoding=UTF-8', '-Xms128m', "-Xmx$($settings.Config.runtime.heapMiB)m", '-jar', ('"' + $JarPath + '"'),
         "--aitest.execution.business-connections=$($settings.Config.runtime.businessConnections)")
-    $application = Start-Process -FilePath $java -ArgumentList $arguments -Environment $environment -WorkingDirectory $Script:ProjectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $application = Start-DetachedProcess -FilePath $java -ArgumentList $arguments -Environment $environment -WorkingDirectory $Script:ProjectRoot -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     $state = @{pid=$application.Id; startedAt=$application.StartTime.ToUniversalTime().ToString('O'); baseUrl=$baseUrl; token=$token; jar=$JarPath;
         configPath=$settings.ConfigPath; stdout=$stdout; stderr=$stderr; status='STARTING'}
     $stateFile = Join-Path $settings.RunDirectory 'state.json'
@@ -671,7 +822,8 @@ function Invoke-Check {
     param([string]$InstanceDirectory = '', [string]$ConfigPath = '', [switch]$TestModel)
     $settings = Read-AiTestConfiguration -InstanceDirectory (Resolve-InstanceDirectory $InstanceDirectory) -ConfigPath $ConfigPath
     $java = Find-AiTestJava ([string]$settings.Config.javaHome)
-    Write-Output "Java 21：$java"
+    Write-Output "Java：$($Script:ToolSources.java)"
+    if ($settings.Config.mysqlHome -and ([string]$settings.Config.mysqlHome).StartsWith($Script:ToolsRoot, [StringComparison]::OrdinalIgnoreCase) -and -not (Test-VcRuntime)) { Write-Warning '本机缺少微软 VC++ 运行库，自带的 MySQL 无法启动；双击 启动.cmd 会自动安装。' }
     $version = Invoke-AiTestSql -Settings $settings -Sql 'SELECT VERSION();'
     if ($version -notmatch '^8\.4\.') { throw "需要 MySQL 8.4，实际连到的是 $version。" }
     Write-Output "MySQL：$version（库 $($settings.DatabaseName) @ $($settings.DatabaseHost):$($settings.DatabasePort)）"
@@ -679,9 +831,8 @@ function Invoke-Check {
     $probe = Join-Path $settings.Storage ('.write-check-' + [guid]::NewGuid().ToString('N'))
     try { [IO.File]::WriteAllText($probe, 'storage-check') } finally { if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe } }
     Write-Output "存储目录可写：$($settings.Storage)"
-    $browserExecutables = if (Test-Path -LiteralPath $settings.Browsers) { @(Get-ChildItem -LiteralPath $settings.Browsers -Recurse -File -Filter 'chrome*.exe') } else { @() }
-    if ($browserExecutables.Count -eq 0) { Write-Warning "配置的目录里没有 Chromium：$($settings.Browsers)。执行 UI/PDF 前请运行 aitest.ps1 install-browsers（启动.cmd 会自动装）。" }
-    else { Write-Output "Chromium 已安装：$($settings.Browsers)" }
+    if (Test-PlaywrightBrowsersPresent -BrowsersPath $settings.Browsers -JavaHome ([string]$settings.Config.javaHome)) { Write-Output "Chromium 已安装：$($settings.Browsers)" }
+    else { Write-Warning "配置的目录里没有本版本需要的 Chromium：$($settings.Browsers)。执行 UI/PDF 前请运行 aitest.ps1 install-browsers（启动.cmd 会自动装）。" }
     $modelConfigured = $settings.Config.model.baseUrl -and $settings.Config.model.apiKey -and $settings.Config.model.modelName
     if (-not $modelConfigured) { Write-Output '配置文件里的模型信息不完整：手工功能都能用；界面「模型设置」里保存的模型同样有效。' }
     if ($TestModel) {
@@ -700,16 +851,72 @@ function Invoke-Check {
     }
 }
 
+# Playwright 命令行：发行包用 app.jar；源码目录没有 JAR 时用 Maven 算出的 classpath 直接调 Playwright 自己的 CLI 类。
+function Get-PlaywrightCliCommand([string]$JarPath, [string]$JavaHome = '') {
+    $java = Get-AiTestJavaOrInstall $JavaHome
+    if ($JarPath -or (Test-Path -LiteralPath $Script:ReleaseJar) -or (Test-Path -LiteralPath $Script:DevJar)) {
+        return @{ Java = $java; Arguments = @('-jar', (Resolve-JarPath $JarPath), '--playwright-cli') }
+    }
+    if (-not $Script:IsSourceTree) { throw '找不到 app.jar。' }
+    $classpathFile = Join-Path $Script:RuntimeRoot 'playwright-classpath.txt'
+    $null = New-Item -ItemType Directory -Path $Script:RuntimeRoot -Force
+    $pom = Get-Item -LiteralPath (Join-Path $Script:ProjectRoot 'backend/pom.xml')
+    if (-not (Test-Path -LiteralPath $classpathFile) -or (Get-Item -LiteralPath $classpathFile).LastWriteTime -lt $pom.LastWriteTime) {
+        if ((Invoke-Maven -B -ntp -q dependency:build-classpath "-Dmdep.outputFile=$classpathFile" -DincludeScope=runtime) -ne 0) { throw '无法生成 Playwright 的 classpath。' }
+    }
+    return @{ Java = $java; Arguments = @('-cp', (Get-Content -Raw -LiteralPath $classpathFile).Trim(), 'com.microsoft.playwright.CLI') }
+}
+
+# 问 Playwright 它需要哪些内核目录（版本号由 Playwright 自己决定），再检查这些目录是否齐全。
+function Get-PlaywrightInstallLocations([string]$BrowsersPath, [string[]]$Browsers, [string]$JarPath = '', [string]$JavaHome = '') {
+    $cli = Get-PlaywrightCliCommand -JarPath $JarPath -JavaHome $JavaHome
+    $info = [Diagnostics.ProcessStartInfo]::new($cli.Java)
+    $info.UseShellExecute=$false; $info.CreateNoWindow=$true; $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+    foreach ($argument in $cli.Arguments + @('install', '--dry-run') + $Browsers) { $info.ArgumentList.Add($argument) }
+    $info.Environment['PLAYWRIGHT_BROWSERS_PATH'] = $BrowsersPath
+    $process = [Diagnostics.Process]::Start($info)
+    try { $output = $process.StandardOutput.ReadToEnd(); $null = $process.StandardError.ReadToEnd(); $process.WaitForExit() } finally { $process.Dispose() }
+    return @([regex]::Matches($output, 'Install location:\s*(.+?)\s*(\r?\n|$)') | ForEach-Object { $_.Groups[1].Value.Trim() })
+}
+function Test-PlaywrightBrowsersPresent([string]$BrowsersPath, [string]$JarPath = '', [string]$JavaHome = '') {
+    if (-not $BrowsersPath -or -not (Test-Path -LiteralPath $BrowsersPath)) { return $false }
+    $locations = Get-PlaywrightInstallLocations -BrowsersPath $BrowsersPath -Browsers @('chromium') -JarPath $JarPath -JavaHome $JavaHome
+    if ($locations.Count -eq 0) { return $false }
+    foreach ($location in $locations) { if (-not (Test-Path -LiteralPath (Join-Path $location 'INSTALLATION_COMPLETE'))) { return $false } }
+    return $true
+}
+# 找已有的 Chromium：config.json 的 paths.browsers → PLAYWRIGHT_BROWSERS_PATH → .tools 自带（目录或压缩包）→ Playwright 默认目录。
+function Find-PlaywrightBrowsers([string]$Configured, [string]$JarPath = '', [string]$JavaHome = '') {
+    $bundledDirectory = Get-DefaultBrowsersDirectory
+    $bundledArchive = "$bundledDirectory-chromium-win64.zip"
+    if (-not (Test-Path -LiteralPath $bundledDirectory) -and (Test-Path -LiteralPath $bundledArchive)) {
+        # 离线包的 .tools/manifest.json 记录了每个自带文件的指纹，解压前先核对，避免下载不完整的包解压出半个内核。
+        $manifestFile = Join-Path $Script:ToolsRoot 'manifest.json'
+        if (Test-Path -LiteralPath $manifestFile) {
+            $entry = (Get-Content -Raw -LiteralPath $manifestFile | ConvertFrom-Json).files | Where-Object name -eq ([IO.Path]::GetFileName($bundledArchive))
+            if ($entry -and (Get-FileHash -LiteralPath $bundledArchive -Algorithm SHA256).Hash -ine $entry.sha256) { throw "自带的 $([IO.Path]::GetFileName($bundledArchive)) 与清单指纹不符，文件可能损坏或下载不完整，请重新获取离线包。" }
+        }
+        Write-Note "解压自带的 Chromium 内核 $([IO.Path]::GetFileName($bundledArchive))……"
+        Expand-Archive -LiteralPath $bundledArchive -DestinationPath $bundledDirectory -Force
+    }
+    $candidates = @(@($Configured, 'config.json 的 paths.browsers'), @($env:PLAYWRIGHT_BROWSERS_PATH, '环境变量 PLAYWRIGHT_BROWSERS_PATH'), @($bundledDirectory, '.tools 自带'), @((Join-Path $env:LOCALAPPDATA 'ms-playwright'), 'Playwright 默认目录'))
+    foreach ($candidate in $candidates) {
+        if (-not $candidate[0]) { continue }
+        if (Test-PlaywrightBrowsersPresent -BrowsersPath $candidate[0] -JarPath $JarPath -JavaHome $JavaHome) { $Script:ToolSources.browsers = "$($candidate[1])：$($candidate[0])"; return [IO.Path]::GetFullPath($candidate[0]) }
+    }
+    return $null
+}
+
 function Invoke-InstallBrowsers {
     param([ValidateSet('chromium','firefox','webkit')][string[]]$Browsers = @('chromium'), [string]$InstanceDirectory = '', [string]$ConfigPath = '', [string]$JarPath = '', [switch]$DryRun)
     $InstanceDirectory = Resolve-InstanceDirectory $InstanceDirectory
     if (-not $ConfigPath) { Initialize-AiTestConfiguration -PackageRoot $Script:ProjectRoot -InstanceDirectory $InstanceDirectory }
     $settings = Read-AiTestConfiguration -InstanceDirectory $InstanceDirectory -ConfigPath $ConfigPath
-    $JarPath = Resolve-JarPath $JarPath
-    $java = Get-AiTestJavaOrInstall ([string]$settings.Config.javaHome)
-    $info = [Diagnostics.ProcessStartInfo]::new($java)
+    if ($Script:Offline -and -not $DryRun) { throw "离线模式：不能联网安装浏览器内核。请把浏览器内核目录复制到 $($settings.Browsers)，或在 config.json 的 paths.browsers 里指定已有的目录。" }
+    $cli = Get-PlaywrightCliCommand -JarPath $JarPath -JavaHome ([string]$settings.Config.javaHome)
+    $info = [Diagnostics.ProcessStartInfo]::new($cli.Java)
     $info.UseShellExecute=$false; $info.CreateNoWindow=$true
-    foreach ($argument in @('-jar',$JarPath,'--playwright-cli','install') + $(if ($DryRun) { @('--dry-run') } else { @() }) + $Browsers) { $info.ArgumentList.Add($argument) }
+    foreach ($argument in $cli.Arguments + @('install') + $(if ($DryRun) { @('--dry-run') } else { @() }) + $Browsers) { $info.ArgumentList.Add($argument) }
     $info.Environment['PLAYWRIGHT_BROWSERS_PATH']=$settings.Browsers
     # 国内网络：先走 npmmirror 的 Playwright 镜像，失败时 Playwright 会自动回退到官方源。
     if (-not $info.Environment.ContainsKey('PLAYWRIGHT_DOWNLOAD_HOST')) { $info.Environment['PLAYWRIGHT_DOWNLOAD_HOST'] = 'https://npmmirror.com/mirrors/playwright' }
@@ -851,25 +1058,49 @@ function Build-DevJar {
 }
 
 # 发行包：config.json 已指向外部数据库时不启动项目 MySQL；其余情况（源码目录、或还没配置）都用项目自带的 MySQL。
+# 用项目自带的 MySQL 实例，还是 config.json 里填的外部数据库？
+# 没有 config.json → 自带；config.json 指向本机且端口等于自带实例的端口（默认 3307）→ 自带；其余情况视为外部数据库，不启动自带实例。
 function Test-UseProjectMysql([string]$InstanceDirectory) {
-    if ($Script:IsSourceTree) { return $true }
-    if (Test-Path -LiteralPath $Script:MysqlConnectionFile) { return $true }
-    return -not (Test-Path -LiteralPath (Join-Path $InstanceDirectory 'config.json'))
+    $configFile = Join-Path $InstanceDirectory 'config.json'
+    if (-not (Test-Path -LiteralPath $configFile)) { return $true }
+    $projectPort = 3307
+    if (Test-Path -LiteralPath $Script:MysqlConnectionFile) { $projectPort = [int](Get-Content -Raw -LiteralPath $Script:MysqlConnectionFile | ConvertFrom-Json).port }
+    try {
+        $config = Get-Content -Raw -LiteralPath $configFile | ConvertFrom-Json -AsHashtable
+        $uri = [uri]([string]$config.database.url).Substring(5)
+        $port = if ($uri.Port -gt 0) { $uri.Port } else { 3306 }
+        return ($uri.Host -in @('127.0.0.1', 'localhost', '::1')) -and ($port -eq $projectPort)
+    } catch { return $true }
 }
 
 function Invoke-Up {
     param([string]$InstanceDirectory = '', [switch]$Dev, [switch]$Build, [switch]$NoBrowser)
     $InstanceDirectory = Resolve-InstanceDirectory $InstanceDirectory
     $useProjectMysql = Test-UseProjectMysql $InstanceDirectory
+    $configFile = Join-Path $InstanceDirectory 'config.json'
+    $configuredJavaHome = ''; $configuredMysqlHome = ''
+    if (Test-Path -LiteralPath $configFile) {
+        $existingConfig = Get-Content -Raw -LiteralPath $configFile | ConvertFrom-Json -AsHashtable
+        $configuredJavaHome = [string]$existingConfig.javaHome; $configuredMysqlHome = [string]$existingConfig.mysqlHome
+    }
+    if ($Script:Offline) { Write-Note '离线模式：只使用本机和 .tools 里已有的组件，不联网下载。' }
     Write-Step '1/6 Java 21'
-    Write-Ok (Get-AiTestJavaOrInstall)
+    $java = Get-AiTestJavaOrInstall $configuredJavaHome
+    Write-Ok $Script:ToolSources.java
 
     Write-Step '2/6 MySQL 8.4'
-    if ($useProjectMysql) { Invoke-Mysql | ForEach-Object { Write-Ok $_ } }
-    else { Write-Ok '使用 config.json 里配置的数据库' }
+    if ($useProjectMysql) {
+        $mysqlArguments = @{}
+        if ($configuredMysqlHome -and -not (Test-Path -LiteralPath $Script:MysqlConnectionFile)) { $mysqlArguments.MySqlHome = $configuredMysqlHome }
+        Invoke-Mysql @mysqlArguments | ForEach-Object { Write-Ok $_ }
+        if ($Script:ToolSources.mysql) { Write-Note $Script:ToolSources.mysql }
+    } else { Write-Ok '使用 config.json 里配置的数据库'; $Script:ToolSources.mysql = 'config.json 里配置的外部数据库' }
 
     Write-Step '3/6 实例配置'
     Initialize-AiTestConfiguration -PackageRoot $Script:ProjectRoot -InstanceDirectory $InstanceDirectory | ForEach-Object { Write-Ok $_ }
+    $writeBack = @{ javaHome = (Split-Path -Parent (Split-Path -Parent $java)) }
+    if ($useProjectMysql -and (Test-Path -LiteralPath $Script:MysqlConnectionFile)) { $writeBack.mysqlHome = [string](Get-Content -Raw -LiteralPath $Script:MysqlConnectionFile | ConvertFrom-Json).home }
+    Update-AiTestConfiguration -ConfigPath $configFile -Values $writeBack
     $settings = Read-AiTestConfiguration -InstanceDirectory $InstanceDirectory
     Write-Ok "配置文件：$($settings.ConfigPath)"
 
@@ -886,11 +1117,15 @@ function Invoke-Up {
     Write-Ok ("{0}（{1:N0} 分钟前生成）" -f $jar, $jarAge.TotalMinutes)
 
     Write-Step '5/6 Playwright 浏览器内核'
-    $chromium = if (Test-Path -LiteralPath $settings.Browsers) { Get-ChildItem -LiteralPath $settings.Browsers -Recurse -File -Filter 'chrome*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 } else { $null }
-    if ($chromium) { Write-Ok "Chromium 已就绪：$($settings.Browsers)" }
-    else {
+    $browsers = Find-PlaywrightBrowsers -Configured $settings.Browsers -JarPath $jar -JavaHome ([string]$settings.Config.javaHome)
+    if ($browsers) {
+        Write-Ok "Chromium 已就绪：$($Script:ToolSources.browsers)"
+        if ($browsers -ne $settings.Browsers) { Update-AiTestConfiguration -ConfigPath $settings.ConfigPath -Values @{ 'paths.browsers' = $browsers }; $settings = Read-AiTestConfiguration -InstanceDirectory $InstanceDirectory }
+    } elseif ($Script:Offline) {
+        Write-Warn "离线模式：没有找到 Chromium 内核。UI 自动化和 PDF 功能不可用，其余功能正常。请把内核目录复制到 $($settings.Browsers)，或在 config.json 的 paths.browsers 里指定。"
+    } else {
         Write-Warn 'Chromium 缺失，自动安装（约 400 MB，一次性）。'
-        try { Invoke-InstallBrowsers -InstanceDirectory $InstanceDirectory -JarPath $jar | ForEach-Object { Write-Ok $_ } }
+        try { Invoke-InstallBrowsers -InstanceDirectory $InstanceDirectory -JarPath $jar | ForEach-Object { Write-Ok $_ }; $Script:ToolSources.browsers = "新安装：$($settings.Browsers)" }
         catch { Write-Warn "浏览器内核安装失败：$($_.Exception.Message)"; Write-Warn '不影响 UI 自动化和 PDF 之外的功能，稍后再双击 启动.cmd 会重试。' }
     }
 
@@ -917,8 +1152,8 @@ function Invoke-Up {
             $vitePath = Join-Path $Script:Frontend 'node_modules/vite/bin/vite.js'
             if (-not (Test-Path -LiteralPath $vitePath)) { throw "找不到 $vitePath，前端依赖没有装好。" }
             $node = Join-Path (Get-AiTestNodeDirectory) 'node.exe'
-            $process = Start-Process -FilePath $node -ArgumentList @($vitePath, '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $Script:Frontend `
-                -WindowStyle Hidden -PassThru -RedirectStandardOutput $log -RedirectStandardError $errorLog -Environment @{ AI_TEST_API_URL = $backend.Url }
+            $process = Start-DetachedProcess -FilePath $node -ArgumentList @($vitePath, '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $Script:Frontend `
+                -RedirectStandardOutput $log -RedirectStandardError $errorLog -Environment @{ AI_TEST_API_URL = $backend.Url }
             $deadline = [DateTime]::UtcNow.AddSeconds(90)
             while ([DateTime]::UtcNow -lt $deadline -and -not (Test-AiTestPortOpen '127.0.0.1' 5173)) {
                 if ($process.HasExited) { throw "Vite 已退出，查看 $errorLog" }
@@ -992,6 +1227,20 @@ function Invoke-Status {
     } else { Show '后端' $false '尚无实例配置' }
     $vite = Get-ViteState
     Show 'Vite' ($null -ne $vite -and $null -ne $vite.Process) $(if ($vite -and $vite.Process) { "$($vite.Url)  PID $($vite.Process.Id)" } else { '未运行（开发者用 aitest.ps1 up -Dev 启动热更新）' })
+    Write-Host '环境（来源：路径）' -ForegroundColor Cyan
+    $configuredJava = ''; $configuredBrowsers = ''
+    if (Test-Path -LiteralPath (Join-Path $InstanceDirectory 'config.json')) { $configuredJava = [string]$settings.Config.javaHome; $configuredBrowsers = $settings.Browsers }
+    try { $null = Find-AiTestJava $configuredJava; Write-Host "  Java      $($Script:ToolSources.java)" } catch { Write-Host '  Java      未找到 Java 21 或更高版本' -ForegroundColor Yellow }
+    if ($mysql) { Write-Host "  MySQL     $(if ($mysql.Home.StartsWith($Script:ToolsRoot, [StringComparison]::OrdinalIgnoreCase)) { '.tools 自带' } else { '本机已安装' })：$($mysql.Home)" }
+    elseif ($configuredJava -and -not (Test-UseProjectMysql $InstanceDirectory)) { Write-Host "  MySQL     config.json 里配置的外部数据库：$($settings.DatabaseHost):$($settings.DatabasePort)" }
+    else { Write-Host '  MySQL     尚未准备' -ForegroundColor DarkGray }
+    Write-Host "  VC++ 运行库 $(if (Test-VcRuntime) { '已安装' } else { '未安装（自带 MySQL 需要）' })"
+    if ($configuredBrowsers) {
+        $ready = $false
+        try { $ready = Test-PlaywrightBrowsersPresent -BrowsersPath $configuredBrowsers -JavaHome $configuredJava } catch { }
+        Write-Host "  Chromium  $(if ($ready) { '就绪' } else { '缺失' })：$configuredBrowsers" -ForegroundColor $(if ($ready) { 'Gray' } else { 'Yellow' })
+    } else { Write-Host '  Chromium  尚未配置' -ForegroundColor DarkGray }
+    Write-Host "  离线模式  $(if ($Script:Offline) { '开（AI_TEST_OFFLINE）' } else { '关' })"
 }
 
 function Invoke-Logs {
@@ -1042,8 +1291,68 @@ function Invoke-Verify {
     Write-Output '所选检查全部通过。公司模型的生成质量仍需在真实环境单独验收。'
 }
 
+# 离线完整包：在发行目录里加 .tools\（MySQL 压缩包、Chromium 内核压缩包、VC++ 运行库安装程序和清单），另打一个 *-offline-windows.zip。
+function Add-OfflineBundle([string]$ReleaseRoot, [string]$Jar) {
+    $bundle = Join-Path $ReleaseRoot '.tools'
+    $null = New-Item -ItemType Directory -Path $bundle -Force
+    $mysqlArchive = Join-Path $Script:ToolsRoot $Script:Downloads.mysql.file
+    if (-not (Test-Path -LiteralPath $mysqlArchive) -or (Get-FileHash -LiteralPath $mysqlArchive -Algorithm SHA256).Hash -ine $Script:Downloads.mysql.sha256) { $null = Get-AiTestTool 'mysql' 'MySQL 8.4' }
+    [IO.File]::Copy($mysqlArchive, (Join-Path $bundle $Script:Downloads.mysql.file), $false)
+    Install-VcRuntimeInstallerCopy (Join-Path $bundle 'vc_redist.x64.exe')
+    # Chromium：让 Playwright 报出本版本需要的目录，逐个装齐后打成一个压缩包，首次启动时解压。
+    $browsersDirectory = Get-DefaultBrowsersDirectory
+    $env:PLAYWRIGHT_BROWSERS_PATH = $null
+    $locations = Get-PlaywrightInstallLocations -BrowsersPath $browsersDirectory -Browsers @('chromium') -JarPath $Jar
+    if ($locations.Count -eq 0) { throw '无法从 Playwright 获取 Chromium 内核目录列表。' }
+    if ($locations | Where-Object { -not (Test-Path -LiteralPath (Join-Path $_ 'INSTALLATION_COMPLETE')) }) {
+        Write-Note '本机的 Chromium 内核不齐，先安装……'
+        Invoke-InstallBrowsers -InstanceDirectory (Join-Path $Script:ProjectRoot 'instance') -JarPath $Jar | Out-Null
+    }
+    $chromiumArchive = Join-Path $bundle ([IO.Path]::GetFileName($browsersDirectory) + '-chromium-win64.zip')
+    $zip = [IO.Compression.ZipFile]::Open($chromiumArchive, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($location in $locations) {
+            $name = [IO.Path]::GetFileName($location)
+            foreach ($file in Get-ChildItem -LiteralPath $location -Recurse -File -Force) {
+                $relative = $name + '/' + [IO.Path]::GetRelativePath($location, $file.FullName).Replace('\', '/')
+                $null = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $relative, [IO.Compression.CompressionLevel]::Optimal)
+            }
+        }
+    } finally { $zip.Dispose() }
+    $manifest = @{ playwright = (Get-PlaywrightVersion); mysql = $Script:Downloads.mysql.folder; chromium = @($locations | ForEach-Object { [IO.Path]::GetFileName($_) }); createdAt = [DateTime]::UtcNow.ToString('O')
+        files = @(Get-ChildItem -LiteralPath $bundle -File | ForEach-Object { @{ name = $_.Name; bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } }) }
+    [IO.File]::WriteAllText((Join-Path $bundle 'manifest.json'), ($manifest | ConvertTo-Json -Depth 5), $Script:Utf8)
+}
+function Install-VcRuntimeInstallerCopy([string]$Destination) {
+    $installer = Join-Path $Script:ToolsRoot 'vc_redist.x64.exe'
+    if (-not (Test-Path -LiteralPath $installer)) {
+        if ($Script:Offline) { throw '离线模式：.tools\ 里没有 vc_redist.x64.exe，无法制作离线包。' }
+        Invoke-WebRequest -Uri $Script:VcRedistUrl -OutFile $installer -ConnectionTimeoutSeconds 20 -OperationTimeoutSeconds 120 -MaximumRetryCount 2 -RetryIntervalSec 5
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $installer
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'vc_redist.x64.exe 的微软数字签名校验失败。' }
+    [IO.File]::Copy($installer, $Destination, $false)
+}
+
+# 给已有的发行目录补做离线完整包（维护者用；build 默认已包含这一步）。
+function Invoke-OfflineBundle {
+    param([Parameter(Mandatory)][string]$ReleaseDirectory)
+    $releaseRoot = [IO.Path]::GetFullPath($ReleaseDirectory)
+    if (-not (Test-Path -LiteralPath (Join-Path $releaseRoot 'app.jar'))) { throw "不是发行目录（缺少 app.jar）：$releaseRoot" }
+    if (Test-Path -LiteralPath (Join-Path $releaseRoot '.tools')) { Remove-Item -LiteralPath (Join-Path $releaseRoot '.tools') -Recurse -Force }
+    if (Test-Path -LiteralPath "$releaseRoot-offline-windows.zip") { Remove-Item -LiteralPath "$releaseRoot-offline-windows.zip" -Force }
+    Add-OfflineBundle -ReleaseRoot $releaseRoot -Jar (Join-Path $releaseRoot 'app.jar')
+    $checksums = Get-ChildItem -LiteralPath $releaseRoot -Force -Recurse -File | Where-Object Name -ne 'SHA256SUMS' | Sort-Object FullName | ForEach-Object {
+        (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + [IO.Path]::GetRelativePath($releaseRoot, $_.FullName).Replace('\','/')
+    }
+    [IO.File]::WriteAllLines((Join-Path $releaseRoot 'SHA256SUMS'), [string[]]$checksums, $Script:Utf8)
+    [IO.Compression.ZipFile]::CreateFromDirectory($releaseRoot, "$releaseRoot-offline-windows.zip", [IO.Compression.CompressionLevel]::Optimal, $false)
+    Write-Output "离线完整包：$releaseRoot-offline-windows.zip"
+    Write-Output "离线包 SHA-256：$((Get-FileHash -LiteralPath "$releaseRoot-offline-windows.zip" -Algorithm SHA256).Hash)"
+}
+
 function Invoke-Build {
-    param([switch]$SkipTests, [string]$MavenSettings = '', [string]$OutputDirectory = '', [int]$Forks = 3)
+    param([switch]$SkipTests, [switch]$SkipOffline, [string]$MavenSettings = '', [string]$OutputDirectory = '', [int]$Forks = 3)
     if (-not $Script:IsSourceTree) { throw 'build 只能在源码目录使用。' }
     Invoke-Pnpm install --frozen-lockfile
     Invoke-Pnpm lint
@@ -1137,6 +1446,7 @@ function Invoke-Build {
     Write-Output "发行目录：$releaseRoot"
     Write-Output "发行压缩包：$releaseRoot.zip"
     Write-Output "压缩包 SHA-256：$((Get-FileHash -LiteralPath "$releaseRoot.zip" -Algorithm SHA256).Hash)"
+    if (-not $SkipOffline) { Write-Step '离线完整包'; Invoke-OfflineBundle -ReleaseDirectory $releaseRoot }
 }
 
 function Invoke-Clean {
@@ -1155,10 +1465,10 @@ function Invoke-Clean {
     }
     $releases = Join-Path $Script:ProjectRoot 'artifacts/releases'
     if (Test-Path -LiteralPath $releases) {
-        $zips = @(Get-ChildItem -LiteralPath $releases -Filter '*.zip' -File | Sort-Object LastWriteTime -Descending)
+        $zips = @(Get-ChildItem -LiteralPath $releases -Filter '*.zip' -File | Where-Object Name -notlike '*-offline-windows.zip' | Sort-Object LastWriteTime -Descending)
         $keep = @($zips | Select-Object -First $KeepReleases | ForEach-Object { $_.BaseName })
         foreach ($entry in Get-ChildItem -LiteralPath $releases -Force) {
-            $base = if ($entry.PSIsContainer) { $entry.Name } else { ($entry.Name -replace '\.(zip|acceptance\.json|dependencies\.json|sbom\.json)$', '') }
+            $base = if ($entry.PSIsContainer) { $entry.Name } else { ($entry.Name -replace '(-offline-windows)?\.(zip|acceptance\.json|dependencies\.json|sbom\.json)$', '') }
             if ($keep -notcontains $base) { $targets.Add($entry.FullName) }
         }
     }
@@ -1176,10 +1486,44 @@ function Invoke-Clean {
     Write-Output ("{0} {1} 项，共 {2} GB。" -f $(if ($WhatIf) { '将删除' } else { '已删除' }), $targets.Count, [math]::Round($bytes / 1GB, 1))
 }
 
+# ============================================================ 私有库 ⇄ 公开库 ============================================================
+# 公开库不带内部材料：验收记录、分析、设计归档、会话交接、实施提示词与两个模板文件。其余 Git 跟踪的文件两边保持一致。
+$Script:PrivateOnlyPatterns = @('^docs/acceptance/', '^docs/analysis/', '^docs/design-archive/', '^docs/superpowers/', '^docs/roadmap\.md$', '^docs/codex-implementation-prompt\.md$',
+    '^docs/session-handoff-.*\.md$', '^\.superpowers/', '^backend-pom-template\.xml$', '^frontend-package-template\.json$')
+function Test-PrivateOnly([string]$RelativePath) { foreach ($pattern in $Script:PrivateOnlyPatterns) { if ($RelativePath -match $pattern) { return $true } }; return $false }
+function Invoke-SyncPublic {
+    param([Parameter(Mandatory)][string]$PublicDirectory, [switch]$Reverse)
+    if (-not $Script:IsSourceTree) { throw 'sync-public 只能在源码目录使用。' }
+    $public = [IO.Path]::GetFullPath($PublicDirectory)
+    if (-not (Test-Path -LiteralPath (Join-Path $public '.git'))) { throw "公开库工作区不存在或不是 Git 仓库：$public" }
+    $source = if ($Reverse) { $public } else { $Script:ProjectRoot }
+    $target = if ($Reverse) { $Script:ProjectRoot } else { $public }
+    $files = @(& git -C $source ls-files -z | ForEach-Object { $_ } ) -join '' -split "`0" | Where-Object { $_ }
+    if ($LASTEXITCODE -ne 0) { throw '读取 Git 文件列表失败。' }
+    $copied = 0
+    foreach ($relative in $files) {
+        if (-not $Reverse -and (Test-PrivateOnly $relative)) { continue }
+        $from = Join-Path $source $relative; $to = Join-Path $target $relative
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $to) -Force
+        if (-not (Test-Path -LiteralPath $to) -or (Get-FileHash -LiteralPath $from -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $to -Algorithm SHA256).Hash) { [IO.File]::Copy($from, $to, $true); $copied++ }
+    }
+    $removed = 0
+    if (-not $Reverse) {
+        # 私有库已删除的文件，公开库也删掉（公开库独有的文件只可能是这份列表之外的内部文件，不存在）。
+        $sourceSet = [Collections.Generic.HashSet[string]]::new([string[]]$files, [StringComparer]::OrdinalIgnoreCase)
+        foreach ($relative in @(& git -C $public ls-files -z) -join '' -split "`0" | Where-Object { $_ }) {
+            if (-not $sourceSet.Contains($relative) -and -not (Test-PrivateOnly $relative)) { & git -C $public rm -q --force -- $relative; $removed++ }
+        }
+    }
+    Write-Output ("已同步到 {0}：复制 {1} 个文件，删除 {2} 个。请到该目录检查 git status，再提交推送。" -f $target, $copied, $removed)
+    & git -C $target -c core.quotepath=false status --short | Out-Host
+}
+
 # ============================================================ 命令分发 ============================================================
 
 $command = if ($args.Count -gt 0) { [string]$args[0] } else { 'help' }
 [object[]]$rest = @($args | Select-Object -Skip 1)
+if ($rest | Where-Object { "$_" -ieq '-Offline' }) { $Script:Offline = $true; [object[]]$rest = @($rest | Where-Object { "$_" -ine '-Offline' }) }
 switch ($command.ToLowerInvariant()) {
     'up'               { Invoke-Up @rest }
     'down'             { Invoke-Down @rest }
@@ -1200,6 +1544,8 @@ switch ($command.ToLowerInvariant()) {
     'mysql'            { Invoke-Mysql @rest }
     'reset-test-db'    { Invoke-ResetTestDb @rest }
     'maven'            { exit (Invoke-Maven @rest) }
+    'sync-public'      { Invoke-SyncPublic @rest }
+    'offline-bundle'   { Invoke-OfflineBundle @rest }
     'help'             { $text = Get-Content -Raw -LiteralPath $PSCommandPath; Write-Host ($text.Substring($text.IndexOf('<#') + 2, $text.IndexOf('#>') - $text.IndexOf('<#') - 2)) }
     default            { throw "未知命令：$command。运行 aitest.ps1 help 查看用法。" }
 }

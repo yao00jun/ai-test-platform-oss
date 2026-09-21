@@ -12,12 +12,15 @@ AI-Test-Platform 是一个装在自己电脑上的测试工作台：把需求文
 | --- | --- |
 | 操作系统 | Windows 10 / 11（64 位）。Linux 见第 9 节 |
 | 内存 | 8 GB 以上 |
-| 磁盘 | 至少 5 GB 空闲，最好是固态盘 |
-| 网络 | 第一次启动需要联网下载约 900 MB 的组件，之后可以离线使用（AI 功能除外） |
+| 磁盘 | 至少 8 GB 空闲，最好是固态盘 |
+| 网络 | 联网版第一次启动要下载约 900 MB 的组件；离线完整版不需要网络（AI 功能除外） |
 
-**不需要提前安装任何软件。** Java、数据库、浏览器内核都会在第一次启动时自动下载到软件目录下的 `.tools` 文件夹里，卸载时整个目录删掉即可，不会在系统里留下东西。
+**需要提前装好两样东西：Java 21 和 PowerShell 7。** 绝大多数开发机已经有；没有的话：
 
-唯一可能需要的是 PowerShell 7。Windows 11 通常自带；如果没有，启动脚本会自动用系统的 winget 安装，只需要在弹出的窗口里点「是」。
+- Java：到 <https://adoptium.net/zh-CN/temurin/releases/?version=21> 下载 Windows x64 的 JDK 21 `.msi` 安装。装了更高版本（22、25）也能用，脚本会提示一句。
+- PowerShell 7：到 <https://aka.ms/powershell> 下载 `PowerShell-7.x-win-x64.msi` 安装。Windows 自带的是旧的 5.1，不能用；有网络时启动脚本也会自动用 winget 装。
+
+其余（MySQL 数据库、Chromium 浏览器内核）由脚本处理：本机已经装了 MySQL 8.4 或 Playwright 内核就直接用，没有就下载到软件目录下的 `.tools` 文件夹，或者直接下载自带这些组件的离线完整版。卸载时整个目录删掉即可，不会在系统里留下东西。
 
 ---
 
@@ -28,10 +31,16 @@ AI-Test-Platform 是一个装在自己电脑上的测试工作台：把需求文
 ### 方式 A：下载发行包（推荐）
 
 1. 打开 <https://github.com/yao00jun/ai-test-platform-oss/releases>。
-2. 找到最上面的版本，点开 **Assets**，下载名字像 `ai-test-platform-1.0.0-xxxxxxxx.zip` 的文件（约 400 MB）。
-3. 右键这个 zip → **全部解压**，解压到一个你记得住的文件夹，例如 `D:\ai-test-platform`。
+2. 找到最上面的版本，点开 **Assets**，两个 zip 选一个下载：
 
-解压后文件夹里应该有：`启动.cmd`、`停止.cmd`、`查看状态.cmd`、`查看日志.cmd`、`备份.cmd`、`app.jar`、`config.example.json`、`scripts`、`docs` 等。
+   | 文件 | 大小 | 适合谁 |
+   | --- | --- | --- |
+   | `ai-test-platform-...-offline-windows.zip` | 约 950 MB | **电脑不能上网**，或本机没有 MySQL。自带 MySQL、Chromium 内核和 VC++ 运行库，解压就能用 |
+   | `ai-test-platform-....zip` | 约 400 MB | 能上网。第一次启动时自动下载缺少的组件 |
+
+3. 右键这个 zip → **全部解压**，解压到一个你记得住的文件夹，例如 `D:\ai-test-platform`。杀毒软件会扫描解压出来的文件，离线完整版可能要等几分钟。
+
+解压后文件夹里应该有：`启动.cmd`、`停止.cmd`、`查看状态.cmd`、`查看日志.cmd`、`备份.cmd`、`app.jar`、`config.example.json`、`scripts`、`docs` 等；离线完整版还多一个 `.tools` 文件夹。
 
 ### 方式 B：下载源码
 
@@ -61,20 +70,22 @@ AI-Test-Platform 是一个装在自己电脑上的测试工作台：把需求文
    ✔ 平台已就绪：http://127.0.0.1:8080
    ```
 
-   第一次会在第 1、2、5 步下载文件，各需要几分钟，黄色文字会告诉你正在下载什么。请耐心等待，不要关窗口。
+   每一步下面会用一行小字告诉你这样东西是从哪里找到的（本机已安装、包里自带、还是刚下载的）。联网版第一次会在第 2、5 步下载文件，各需要几分钟；离线完整版只是解压，不下载。第一次启动自带的 MySQL 时，如果本机缺少微软 VC++ 运行库，会弹一个安装窗口，点「是」即可。请耐心等待，不要关窗口。
 4. 看到 **✔ 平台已就绪** 后，浏览器会自动打开 <http://127.0.0.1:8080>，黑窗口随后自动关闭。这是正常的：程序在后台继续运行。
 5. 第二次以后启动只需要十几秒。
 
-第一次启动共下载这些东西，全部来自官方网站并校验过指纹：
+**脚本找组件的顺序**：`instance\config.json` 里填的路径 → 环境变量（`JAVA_HOME`、`MYSQL_HOME`、`PLAYWRIGHT_BROWSERS_PATH`）→ 包里的 `.tools` 文件夹 → 本机常见安装位置（`C:\Program Files\Java`、`C:\Program Files\MySQL`、Playwright 的默认目录）→ 最后才联网下载。找到的路径会写进 `instance\config.json`，以后只认这个文件；想换就用记事本改 `javaHome`、`mysqlHome`、`paths.browsers` 三项。
+
+联网版会下载的东西，全部来自官方网站并校验过指纹：
 
 | 组件 | 大小 | 用途 |
 | --- | --- | --- |
-| Java 21（Eclipse Temurin） | 约 200 MB | 运行程序 |
 | MySQL 8.4 | 约 270 MB | 保存你的项目、用例和执行记录 |
 | Chromium 浏览器内核 | 约 400 MB | 执行网页自动化和生成 PDF |
+| 微软 VC++ 运行库 | 约 25 MB | 自带的 MySQL 需要，大多数电脑已有 |
 | Node.js 24（只有源码方式需要） | 约 30 MB | 打包前端页面 |
 
-如果电脑上已经装了 Java 21 或 MySQL 8.4，脚本会直接使用，不再下载。
+**完全没有网络的电脑**：下载离线完整版即可。它只要求本机装好 Java 21 和 PowerShell 7（见第 1 节），启动时不会尝试联网。要强制脚本不联网，双击 `启动.cmd` 改成在文件夹里按住 Shift 右键 → 打开 PowerShell → 执行 `.\scripts\aitest.ps1 up -Offline`，缺什么会直接告诉你。离线完整版不含 Firefox 和 WebKit 内核，网页自动化只能选 Chromium。
 
 ---
 
@@ -138,8 +149,11 @@ AI-Test-Platform 是一个装在自己电脑上的测试工作台：把需求文
 | 现象 | 原因 | 怎么办 |
 | --- | --- | --- |
 | 双击 `启动.cmd` 黑窗口一闪就没了，网页也没打开 | 脚本出错后窗口应该会停住等你按键。如果真的一闪而过，多半是 Windows 拦截了 | 右键 `启动.cmd` → 属性 → 勾选下方的「解除锁定」→ 确定，再双击 |
-| 提示「本机还没有 PowerShell 7」后安装失败 | 电脑没有 winget，或公司网络限制 | 打开 <https://aka.ms/powershell> 下载 PowerShell 7 的 `.msi` 安装，然后再双击 `启动.cmd` |
-| 「无法下载 Java 21 / MySQL 8.4」 | 网络不通或被公司防火墙拦住 | 换一个网络（手机热点也行）重试；或找人把提示里的文件下载好，放到 `.tools` 文件夹里再双击启动 |
+| 提示「本机还没有 PowerShell 7」后安装失败 | 电脑没有 winget，或没有网络 | 在有网的电脑打开 <https://aka.ms/powershell> 下载 PowerShell 7 的 `.msi`，拷过来安装，然后再双击 `启动.cmd` |
+| 「没有找到 Java 21 或更高版本」 | 没装 Java，或装在脚本找不到的位置 | 按第 1 节安装 JDK 21；已经装了的话，用记事本打开 `instance\config.json`，把 `javaHome` 填成 JDK 目录，例如 `C:\\Program Files\\Java\\jdk-21` |
+| 「无法下载 MySQL 8.4」或「离线模式：缺少 …」 | 网络不通或被公司防火墙拦住 | 换一个网络（手机热点也行）重试；或改下载离线完整版；或找人把提示里的文件下载好，放到 `.tools` 文件夹里再双击启动 |
+| 「本机缺少微软 VC++ 运行库」 | 全新的系统 | 双击 `启动.cmd` 会弹出安装窗口，点「是」；离线时运行 `.tools\vc_redist.x64.exe` |
+| 本机已经装了 MySQL 8.4，不想再下载 | 脚本没找到它 | 通常会自动找到 `C:\Program Files\MySQL\MySQL Server 8.4`。装在别处的，用记事本把 `instance\config.json` 的 `mysqlHome` 填成安装目录，删掉 `.runtime\mysql` 后重新启动。脚本只借用它的程序文件，你原来的数据库不受影响 |
 | 「端口 8080 已被其他程序占用」 | 另一个程序在用 8080 | 用记事本打开 `instance\config.json`，把 `"port": 8080` 改成 `8090`，保存后重新启动，网址相应变成 `http://127.0.0.1:8090` |
 | 「MySQL 启动后立即退出」 | 3307 端口被占，或上次没有正常关闭 | 先双击 `停止.cmd`，再双击 `启动.cmd`。还不行就打开 `.runtime\mysql\mysql.log` 看最后几行 |
 | 「程序启动后退出了」或「启动超时」 | 后端没起来 | 打开提示里给出的 `.err.log` 和 `.log`，找 `ERROR` 或 `Caused by` 那几行 |
@@ -150,6 +164,7 @@ AI-Test-Platform 是一个装在自己电脑上的测试工作台：把需求文
 | 黑窗口里中文显示成方块或问号 | 窗口字体不支持 | 右键窗口标题栏 → 属性 → 字体，改成「新宋体」或「Microsoft YaHei Mono」。不影响程序运行 |
 | 磁盘空间越来越少 | 日志和临时文件堆积 | 开发者用 `aitest.ps1 clean` 清理；普通使用者可以删除 `instance\logs` 里旧的日志文件 |
 | 想彻底重来 | | 先双击 `停止.cmd`，然后删除 `.runtime`、`instance`、`data` 三个文件夹。**这会删掉所有项目数据**，删之前先双击 `备份.cmd` |
+| 想换 Java、MySQL 或浏览器内核的位置 | | 用记事本改 `instance\config.json` 的 `javaHome`、`mysqlHome`、`paths.browsers`，然后重新启动。`查看状态.cmd` 底部会显示当前用的是哪一个 |
 
 如果表里没有你的情况，把这三样东西发给开发者：`查看状态.cmd` 的截图、黑窗口里红色文字的截图、`instance\logs` 里最新的两个日志文件。
 
@@ -190,7 +205,7 @@ AI-Test-Platform 是一个装在自己电脑上的测试工作台：把需求文
 
 1. 双击 `备份.cmd`，再双击 `停止.cmd`。
 2. 下载新版本的 zip，解压到一个新文件夹。
-3. 把旧文件夹里的 `instance`、`data`、`.runtime`、`.tools` 四个文件夹**整个复制**到新文件夹里（`.tools` 复制过去可以省掉重新下载）。
+3. 把旧文件夹里的 `instance`、`data`、`.runtime`、`.tools` 四个文件夹**整个复制**到新文件夹里（`.tools` 复制过去可以省掉重新下载；下载的是离线完整版时，新文件夹里已有 `.tools`，跳过它）。
 4. 在新文件夹里双击 `启动.cmd`。第一次启动会自动升级数据库结构。
 
 如果升级后有问题，回到旧文件夹双击 `启动.cmd` 即可继续用旧版；旧版的数据在旧文件夹里没有被改动。
@@ -245,13 +260,15 @@ chmod +x scripts/aitest.sh
 | 测试计划 | 混合执行、排期、不可变报告、人工项录入、定向回归 |
 | 缺陷管理 | 手工录单、失败去重与发生历史、代码 RCA、修复建议、人工评价 |
 
-AI 草稿由人裁决：全局反馈产生可选择的变更集；单条用例、单句 SQL、单个 UI 步骤可以多轮原地调优，每轮基于当前版本，人工修改优先。各类型导入格式见发行包 `docs/import-templates-guide.md`。
+AI 草稿由人裁决：全局反馈产生可选择的变更集；单条用例、单句 SQL、单个 UI 步骤可以多轮原地调优，每轮基于当前版本，人工修改优先。各类型导入格式见[导入规范](docs/import-templates-guide.md)。
 
 需求支持本地路径、拖拽上传或粘贴；绝对路径指运行程序那台电脑上的文件。源码与 DDL 先导入成固定版本，再用于影响分析、生成和诊断；源文件后来改变不会改写历史证据。静态源码线索与模型建议仍需实际执行验证，代码 RCA 的补丁只是供人审阅的建议，不会自动修改业务源码。
 
 ---
 
 ## 11. 给开发者
+
+想改代码或提交改进，先看 [CONTRIBUTING.md](CONTRIBUTING.md)：环境、目录结构、开发循环、Pull Request 流程都在里面。
 
 ### 一个脚本
 
@@ -264,13 +281,14 @@ AI 草稿由人裁决：全局反馈产生可选择的变更集；单条用例�
 .\scripts\aitest.ps1 verify        # 前端 lint/单测/构建 + 后端单测和快速集成测试，约 4～7 分钟
 .\scripts\aitest.ps1 verify -Full  # 加上 @Tag("slow") 的重集成测试，与发行构建相同
 .\scripts\aitest.ps1 verify -IncludeBrowser   # 再以独立端口跑 Playwright 端到端
-.\scripts\aitest.ps1 build         # 完整发行构建，输出到 artifacts\releases（= 打包发行.cmd）
+.\scripts\aitest.ps1 build         # 完整发行构建，输出联网版和离线完整版两个 zip 到 artifacts\releases（= 打包发行.cmd）；-SkipOffline 只出联网版
+.\scripts\aitest.ps1 sync-public -PublicDirectory ..\ai-test-platform-public   # 把公开部分同步到公开库工作区（-Reverse 反向）
 .\scripts\aitest.ps1 clean [-WhatIf]          # 清理 .runtime 过程文件和旧发行包
 .\scripts\aitest.ps1 mysql [-DataDirectory D:\ssd\mysql]   # 启动/初始化项目 MySQL；机械盘首次可把数据目录指到固态盘
 .\scripts\aitest.ps1 maven -B -ntp verify     # 参数原样传给仓库内的 Maven Wrapper
 ```
 
-前端命令统一经 `corepack` 使用 `frontend/package.json` 钉住的 pnpm 版本，本机装的是哪个 pnpm 无关紧要。`scripts/tests/` 下是运维脚本的契约测试和发行演练脚本，手动执行。运行、构建、测试库、备份恢复和性能复测的细节见发行包 `docs/operations.md`。
+任何命令都可以加 `-Offline`，缺什么直接报错而不是尝试下载。前端命令统一经 `corepack` 使用 `frontend/package.json` 钉住的 pnpm 版本，本机装的是哪个 pnpm 无关紧要。公开库的每个 Pull Request 由 GitHub Actions 自动跑 `verify`（`.github/workflows/verify.yml`）。`scripts/tests/` 下是运维脚本的契约测试和发行演练脚本，手动执行。运行、构建、测试库、备份恢复和性能复测的细节见[运行手册](docs/operations.md)。
 
 ### 当前锁定版本
 
@@ -283,9 +301,12 @@ AI 草稿由人裁决：全局反馈产生可选择的变更集；单条用例�
 
 完整依赖以 [backend/pom.xml](backend/pom.xml) 和 [frontend/pnpm-lock.yaml](frontend/pnpm-lock.yaml) 为准。
 
-### 文档与许可
+### 文档
 
-- 架构、API 契约、数据库与迁移、运行手册、源码分析、计划排期、群通知、晨报、EvalOps、提示词等使用者文档随发行包的 `docs/` 目录分发，见 [GitHub Releases](https://github.com/yao00jun/ai-test-platform-oss/releases)。
-- 本项目以 GPL-3.0 发布，见 [LICENSE](LICENSE)。移植自 MeterSphere 与 TestPilot-AI 的代码、其版权与许可说明见 [NOTICE.md](NOTICE.md)、[licenses/](licenses/) 与 [frontend/THIRD_PARTY_NOTICES.md](frontend/THIRD_PARTY_NOTICES.md)。
+- [实际架构](docs/architecture-design.md)、[API 契约](docs/api-contract.md)、[数据库与迁移](docs/database.md)
+- [运行、构建、备份与恢复](docs/operations.md)
+- [源码分析](docs/source-analysis.md)、[影响面与定向回归](docs/source-impact.md)、[生成证据约束](docs/source-grounding.md)、[代码诊断](docs/code-diagnosis.md)
+- [计划排期](docs/plan-scheduling.md)、[群通知](docs/notifications.md)、[晨报](docs/morning-brief.md)、[EvalOps](docs/evalops.md)
+- [提示词](docs/prompts/README.md)、[第三方复用](docs/third-party-reuse.md)、[版权与源码说明](NOTICE.md)
 
 发行包包含应用 JAR、配置示例、脚本、迁移、面向使用者的文档、第三方许可、对应源码及 SHA-256 清单；验收记录与实施计划只留在源码仓库。公司模型与实际业务环境尚未配置，协议 fixture 的通过不代表公司模型的生成质量。

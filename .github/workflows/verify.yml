@@ -1,0 +1,68 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 公开库的每个 Pull Request 和 main 推送都跑一遍，等同本地 `scripts/aitest.ps1 verify`。
+# 私有库只在手动触发时跑，避免消耗私有仓库的 Actions 额度。
+jobs:
+  verify:
+    if: github.repository == 'yao00jun/ai-test-platform-oss' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PLAYWRIGHT_DOWNLOAD_HOST: https://cdn.playwright.dev
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Cache MySQL, Chromium and Maven downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            .tools/mysql-8.4.10-winx64.zip
+            .tools/playwright-1.62.0
+            .tools/corepack
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: tools-${{ runner.os }}-${{ hashFiles('backend/pom.xml', 'backend/.mvn/wrapper/maven-wrapper.properties', 'frontend/package.json') }}
+          restore-keys: tools-${{ runner.os }}-
+
+      - name: Start the project MySQL 8.4
+        run: pwsh -NoProfile -File scripts/aitest.ps1 mysql
+
+      - name: Install the Chromium kernel that Playwright expects
+        run: pwsh -NoProfile -File scripts/aitest.ps1 install-browsers
+
+      - name: Frontend lint/unit/build, backend unit and integration tests
+        run: pwsh -NoProfile -File scripts/aitest.ps1 verify -Forks 2
+
+      - name: Operations script contract tests
+        run: |
+          pwsh -NoProfile -File scripts/tests/operations-contract.ps1
+          pwsh -NoProfile -File scripts/tests/platform-auth-contract.ps1
+          pwsh -NoProfile -File scripts/tests/mysql-client-contract.ps1
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            backend/target/surefire-reports
+            backend/target/failsafe-reports
+            frontend/test-results
+            .runtime/mysql/mysql.log
+          if-no-files-found: ignore
