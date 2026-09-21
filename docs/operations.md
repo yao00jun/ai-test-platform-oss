@@ -103,6 +103,8 @@ node .\scripts\tests\release-smoke.mjs 'E:\发行包目录'
 
 `config.json` 里的数据库指向本机且端口等于项目 MySQL 端口时启动自带实例；否则视为外部数据库，不启动自带实例（源码目录同样适用）。
 
+Windows 版 MySQL 的服务端和客户端按系统 ANSI 代码页解析文件路径。项目路径含代码页无法表示的字符时（例如英文系统上的中文目录），`my.ini`、`admin.cnf`、日志和默认数据目录整体放到 `%ProgramData%i-test-platform\mysql`（记录在 `connection.json` 的 `runtime`），备份/检查/恢复用的临时客户端配置放到 `%ProgramData%i-test-platform\client`；实例目录、存储目录和 SQL 内容不受影响。
+
 任何命令加 `-Offline`（或设置环境变量 `AI_TEST_OFFLINE=1`）进入离线模式：缺什么直接报错并说明把文件放到哪里，不尝试下载；联网下载的连接超时缩短为 20 秒。自带 MySQL 需要微软 VC++ 2015-2022 x64 运行库，缺失时从 `.tools/vc_redist.x64.exe` 或微软官网安装（校验微软数字签名，需要管理员权限）。
 
 ## 私有库与公开库

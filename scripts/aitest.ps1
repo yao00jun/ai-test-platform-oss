@@ -344,13 +344,27 @@ function Get-AiTestMasterKey($Settings) {
 
 function Get-AiTestKeyHash([byte[]]$Bytes) { return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)) }
 
+# Windows 版 MySQL 的服务端和客户端都按系统 ANSI 代码页解析文件路径（相对文件名也会先拼成绝对路径再转码）。
+# 路径里有代码页表示不了的字符（英文系统上的中文目录、中文系统上的其他文字）就打不开。能表示的路径直接用，否则换到纯英文目录。
+function Test-AnsiRepresentable([string]$Text) {
+    $ansi = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
+    return $ansi.GetString($ansi.GetBytes($Text)) -ceq $Text
+}
+function Get-AnsiSafeDirectory([string]$Preferred, [string]$Purpose) {
+    foreach ($candidate in @($Preferred, (Join-Path $env:ProgramData "ai-test-platform/$Purpose"), (Join-Path $env:SystemRoot "Temp/ai-test-platform/$Purpose"))) {
+        if ($candidate -and (Test-AnsiRepresentable $candidate)) { $null = New-Item -ItemType Directory -Path $candidate -Force; return [IO.Path]::GetFullPath($candidate) }
+    }
+    throw "找不到 MySQL 能读取的目录（路径含系统代码页无法表示的字符）：$Preferred"
+}
+
 function Invoke-AiTestMySqlTool($Settings, [ValidateSet('mysql','mysqldump')][string]$Tool, [string[]]$Arguments, [string]$InputFile = '', [string]$OutputFile = '') {
     $mysqlRoot = [string]$Settings.Config.mysqlHome
     $executable = if ($mysqlRoot) { Join-Path $mysqlRoot "bin/$Tool.exe" } else { (Get-Command "$Tool.exe" -ErrorAction Stop).Source }
     if (-not (Test-Path -LiteralPath $executable)) { throw '请在 config.json 的 mysqlHome 里填写 MySQL 8.4 的安装目录。' }
     $null = New-Item -ItemType Directory -Path $Settings.RunDirectory,$Settings.LogDirectory -Force
     $identity = [guid]::NewGuid().ToString('N')
-    $clientFile = Join-Path $Settings.RunDirectory "mysql-$identity.cnf"
+    $clientDirectory = Get-AnsiSafeDirectory -Preferred $Settings.RunDirectory -Purpose 'client'
+    $clientFile = Join-Path $clientDirectory "mysql-$identity.cnf"
     $stdoutFile = Join-Path $Settings.RunDirectory "mysql-$identity.out"
     $errorFile = Join-Path $Settings.LogDirectory "mysql-$identity.log"
     function Quote-ClientValue([string]$Value) { return '"' + $Value.Replace('\','\\').Replace('"','\"').Replace("`r",'\r').Replace("`n",'\n') + '"' }
@@ -364,9 +378,9 @@ function Invoke-AiTestMySqlTool($Settings, [ValidateSet('mysql','mysqldump')][st
         if ($OutputFile -and (Test-Path -LiteralPath $OutputFile)) { throw '输出文件已存在，没有覆盖。' }
         $info = [Diagnostics.ProcessStartInfo]::new($executable)
         $info.UseShellExecute=$false; $info.CreateNoWindow=$true
-        $info.WorkingDirectory=$Settings.RunDirectory
+        $info.WorkingDirectory=$clientDirectory
         $info.RedirectStandardInput=$true; $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
-        # Windows 版 MySQL 客户端打不开含中文的绝对路径 defaults 文件：工作目录由系统设置，参数只给 ASCII 文件名；SQL 和导出内容走重定向流。
+        # defaults 文件放在代码页能表示的目录里，参数只给 ASCII 文件名；SQL 和导出内容走重定向流，不受路径限制。
         $info.ArgumentList.Add('--defaults-file=' + [IO.Path]::GetFileName($clientFile))
         $info.ArgumentList.Add('--no-login-paths')
         foreach ($argument in $Arguments) { $info.ArgumentList.Add($argument) }
@@ -504,18 +518,20 @@ function Test-AiTestPortOpen([string]$HostName, [int]$Port, [int]$TimeoutMs = 80
     catch { return $false } finally { $client.Dispose() }
 }
 
+# my.ini / admin.cnf / 日志所在目录：.runtime/mysql 能被代码页表示就用它，否则用 %ProgramData%\ai-test-platform\mysql（记在 connection.json 的 runtime 里）。
+function Get-MysqlRuntimeDirectory {
+    if (Test-Path -LiteralPath $Script:MysqlConnectionFile) {
+        $recorded = (Get-Content -Raw -LiteralPath $Script:MysqlConnectionFile | ConvertFrom-Json -AsHashtable).runtime
+        if ($recorded) { return [string]$recorded }
+    }
+    return (Get-AnsiSafeDirectory -Preferred $Script:MysqlRuntime -Purpose 'mysql')
+}
 function Get-ProjectMysql {
     if (-not (Test-Path -LiteralPath $Script:MysqlConnectionFile)) { return $null }
     $connection = Get-Content -Raw -LiteralPath $Script:MysqlConnectionFile | ConvertFrom-Json -AsHashtable
     $process = if ($connection.pid) { Get-Process -Id ([int]$connection.pid) -ErrorAction SilentlyContinue } else { $null }
     if ($process -and $process.ProcessName -ne 'mysqld') { $process = $null }
     return [pscustomobject]@{ Port=[int]$connection.port; Home=[string]$connection.home; Username=[string]$connection.username; Process=$process; Listening=(Test-AiTestPortOpen '127.0.0.1' ([int]$connection.port)) }
-}
-
-# MySQL 服务端在 Windows 上按系统 ANSI 代码页读取 my.ini：路径能用 ANSI 表示就直接用，否则换一个纯英文目录存数据。
-function Test-AnsiRepresentable([string]$Text) {
-    $ansi = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
-    return $ansi.GetString($ansi.GetBytes($Text)) -ceq $Text
 }
 
 # MySQL 的 Windows 压缩包版需要微软 VC++ 运行库（Visual C++ 2015-2022 x64）。缺失时优先用包里自带的安装程序，联网时从微软官网下载。
@@ -564,6 +580,8 @@ function Find-SystemMysqlHome {
 function Invoke-Mysql {
     param([int]$Port = 3307, [string]$MySqlHome = '', [string]$DataDirectory = '')
     $null = New-Item -ItemType Directory -Path $Script:MysqlRuntime,$Script:ToolsRoot -Force
+    $runtime = Get-MysqlRuntimeDirectory
+    if ($runtime -ne [IO.Path]::GetFullPath($Script:MysqlRuntime)) { Write-Warn "项目路径含系统代码页无法表示的字符，MySQL 配置、日志和数据放在 $runtime" }
     $existing = $null
     if (Test-Path -LiteralPath $Script:MysqlConnectionFile) {
         $existing = Get-Content -Raw -LiteralPath $Script:MysqlConnectionFile | ConvertFrom-Json
@@ -594,17 +612,11 @@ function Invoke-Mysql {
     if ($versionOutput -notmatch '8\.4\.') { throw "本项目需要 MySQL 8.4 LTS，找到的是：$versionOutput" }
     # 数据目录默认在 .runtime/mysql/data。源码放在机械硬盘时可用 -DataDirectory 指到固态盘（选择会记住）：
     # 集成测试每建一个新库要执行 65 张 CREATE TABLE，机械盘约一分钟，固态盘几秒。
-    $dataDirectory = if ($DataDirectory) { [IO.Path]::GetFullPath($DataDirectory) } else { Join-Path $Script:MysqlRuntime 'data' }
-    $logFile = Join-Path $Script:MysqlRuntime 'mysql.log'
-    if (-not (Test-AnsiRepresentable "$MySqlHome$dataDirectory$logFile")) {
-        $fallback = Join-Path $env:ProgramData 'ai-test-platform/mysql'
-        if (-not (Test-AnsiRepresentable "$MySqlHome$fallback")) { throw "MySQL 服务端不支持当前路径里的字符：$dataDirectory。请把项目放到纯英文路径下。" }
-        if (-not $DataDirectory) { $dataDirectory = Join-Path $fallback 'data' }
-        $logFile = Join-Path $fallback 'mysql.log'
-        Write-Warn "项目路径含 MySQL 不支持的字符，数据目录改用 $dataDirectory"
-    }
-    $null = New-Item -ItemType Directory -Path $dataDirectory,(Split-Path -Parent $logFile) -Force
-    $configPath = Join-Path $Script:MysqlRuntime 'my.ini'
+    $dataDirectory = if ($DataDirectory) { [IO.Path]::GetFullPath($DataDirectory) } else { Join-Path $runtime 'data' }
+    $logFile = Join-Path $runtime 'mysql.log'
+    if (-not (Test-AnsiRepresentable "$MySqlHome$dataDirectory")) { throw "MySQL 服务端不支持这个路径里的字符：$MySqlHome 或 $dataDirectory。请把 MySQL 或数据目录放到纯英文路径下。" }
+    $null = New-Item -ItemType Directory -Path $dataDirectory -Force
+    $configPath = Join-Path $runtime 'my.ini'
     $config = @"
 [mysqld]
 basedir=$($MySqlHome.Replace('\','/'))
@@ -625,7 +637,7 @@ log-error=$($logFile.Replace('\','/'))
     $ansi = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
     [IO.File]::WriteAllBytes($configPath, $ansi.GetBytes($config))
     $firstStart = -not (Test-Path -LiteralPath (Join-Path $dataDirectory 'mysql'))
-    Push-Location $Script:MysqlRuntime
+    Push-Location $runtime
     try {
         if ($firstStart) {
             Write-Note '首次初始化数据目录……'
@@ -635,8 +647,8 @@ log-error=$($logFile.Replace('\','/'))
         # --no-monitor：Windows 版 mysqld 默认先起一个监护进程再由它拉起真正的服务进程，而监护进程拼子进程命令行时不给带空格的路径加引号，
         # 项目放在「离线 测试」这类目录下时子进程会读不到 --defaults-file。直接运行服务进程即可（我们不用 RESTART 语句）。
         # 标准输出/错误重定向到文件：mysqld 不能继承父进程的管道，否则从 CI 或另一个脚本里调用时父进程会一直等它退出。
-        $process = Start-DetachedProcess -FilePath $mysqld -ArgumentList @('--defaults-file=my.ini', '--no-monitor') -WorkingDirectory $Script:MysqlRuntime `
-            -RedirectStandardOutput (Join-Path $Script:MysqlRuntime 'mysqld.out.log') -RedirectStandardError (Join-Path $Script:MysqlRuntime 'mysqld.err.log')
+        $process = Start-DetachedProcess -FilePath $mysqld -ArgumentList @('--defaults-file=my.ini', '--no-monitor') -WorkingDirectory $runtime `
+            -RedirectStandardOutput (Join-Path $runtime 'mysqld.out.log') -RedirectStandardError (Join-Path $runtime 'mysqld.err.log')
     } finally { Pop-Location }
     $ready = $false
     for ($attempt = 0; $attempt -lt 120; $attempt++) {
@@ -660,10 +672,12 @@ GRANT ALL ON ai_test_business_test.* TO 'aitest'@'localhost';
 "@
         $sql | & $mysql --host=127.0.0.1 "--port=$Port" --user=root --default-character-set=utf8mb4
         if ($LASTEXITCODE -ne 0) { throw '创建平台数据库和账号失败。' }
-        [IO.File]::WriteAllText((Join-Path $Script:MysqlRuntime 'admin.cnf'), "[client]`nuser=root`npassword=$rootPassword`nhost=127.0.0.1`nport=$Port`n", $Script:Utf8)
+        [IO.File]::WriteAllText((Join-Path $runtime 'admin.cnf'), "[client]`nuser=root`npassword=$rootPassword`nhost=127.0.0.1`nport=$Port`n", $Script:Utf8)
         $existing = @{username='aitest'; password=$appPassword}
     }
-    $settings = @{home=$MySqlHome; port=$Port; username=$existing.username; password=$existing.password; version=$versionOutput; pid=$process.Id; dataDirectory=$dataDirectory}
+    # 测试代码按固定路径读 .runtime/mysql/admin.cnf；运行目录挪走时留一份副本。
+    if ($runtime -ne [IO.Path]::GetFullPath($Script:MysqlRuntime) -and (Test-Path -LiteralPath (Join-Path $runtime 'admin.cnf'))) { Copy-Item -LiteralPath (Join-Path $runtime 'admin.cnf') -Destination (Join-Path $Script:MysqlRuntime 'admin.cnf') -Force }
+    $settings = @{home=$MySqlHome; port=$Port; username=$existing.username; password=$existing.password; version=$versionOutput; pid=$process.Id; dataDirectory=$dataDirectory; runtime=$runtime}
     [IO.File]::WriteAllText($Script:MysqlConnectionFile, ($settings | ConvertTo-Json), $Script:Utf8)
     Write-Output "项目 MySQL 8.4 已就绪：127.0.0.1:$Port（账号密码在 .runtime\mysql\connection.json，已被 Git 忽略）"
 }
@@ -672,10 +686,10 @@ function Stop-ProjectMysql {
     $mysql = Get-ProjectMysql
     if (-not $mysql -or -not $mysql.Process) { Write-Ok '未运行'; return }
     $mysqladmin = Join-Path $mysql.Home 'bin/mysqladmin.exe'
+    $runtime = Get-MysqlRuntimeDirectory
     $stopped = $false
-    if ((Test-Path -LiteralPath $mysqladmin) -and (Test-Path -LiteralPath (Join-Path $Script:MysqlRuntime 'admin.cnf'))) {
-        # admin.cnf 用相对文件名传入：Windows 版 MySQL 客户端读不了含中文的绝对路径。
-        $shutdown = Start-Process -FilePath $mysqladmin -ArgumentList @('--defaults-file=admin.cnf', 'shutdown') -WorkingDirectory $Script:MysqlRuntime -WindowStyle Hidden -PassThru -Wait
+    if ((Test-Path -LiteralPath $mysqladmin) -and (Test-Path -LiteralPath (Join-Path $runtime 'admin.cnf'))) {
+        $shutdown = Start-Process -FilePath $mysqladmin -ArgumentList @('--defaults-file=admin.cnf', 'shutdown') -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -Wait
         $stopped = ($shutdown.ExitCode -eq 0) -and $mysql.Process.WaitForExit(30000)
     }
     if (-not $stopped) { Write-Warn '优雅关闭未成功，直接结束 mysqld 进程。'; $mysql.Process.Kill(); $mysql.Process.WaitForExit(15000) | Out-Null }
@@ -687,7 +701,8 @@ function Invoke-ResetTestDb {
     # 集成测试共用持久库，不重建会越用越大，残留的晨报排期还会抢走模型 fixture 的应答（AI 流水线测试报 503）。
     # Failsafe 分 $Forks 个 JVM 跑，第 N 个用带 _N 后缀的库。AI_TEST_INTEGRATION_DB_URL 指向外部库时跳过。
     if ($env:AI_TEST_INTEGRATION_DB_URL) { if (-not $Quiet) { Write-Output '已设置 AI_TEST_INTEGRATION_DB_URL，不动外部测试库。' }; return }
-    $adminFile = Join-Path $Script:MysqlRuntime 'admin.cnf'
+    $runtime = Get-MysqlRuntimeDirectory
+    $adminFile = Join-Path $runtime 'admin.cnf'
     if (-not (Test-Path -LiteralPath $Script:MysqlConnectionFile) -or -not (Test-Path -LiteralPath $adminFile)) { throw '项目 MySQL 尚未初始化，先运行 aitest.ps1 mysql（或 启动.cmd）。' }
     $connection = Get-Content -Raw -LiteralPath $Script:MysqlConnectionFile | ConvertFrom-Json
     if ($connection.username -notmatch '^[A-Za-z0-9_]+$') { throw '测试账号名不符合预期。' }
@@ -706,7 +721,7 @@ function Invoke-ResetTestDb {
     }
     # 上次用更多 fork 或崩溃的 ProcessRecoveryIT 子进程留下的库。
     $null = $statements.AppendLine("SELECT CONCAT('DROP DATABASE `', schema_name, '`;') FROM information_schema.schemata WHERE schema_name LIKE 'ai_test_acceptance_%' OR (schema_name REGEXP '^ai_test_(platform|business)_test_[0-9]+$' AND CAST(SUBSTRING_INDEX(schema_name, '_', -1) AS UNSIGNED) > $Forks);")
-    Push-Location $Script:MysqlRuntime
+    Push-Location $runtime
     try {
         $output = $statements.ToString() | & $mysql --defaults-file=admin.cnf --default-character-set=utf8mb4 --connect-timeout=10 --batch --skip-column-names 2>&1
         if ($LASTEXITCODE -ne 0) { throw "重建测试库失败：$output" }
