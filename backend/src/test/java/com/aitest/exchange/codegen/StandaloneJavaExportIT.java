@@ -63,7 +63,10 @@ class StandaloneJavaExportIT extends MySqlIntegrationTest {
                     .collect(java.util.stream.Collectors.joining(java.io.File.pathSeparator));
             assertThat(dependencies).isNotBlank();
             assertThat(run(List.of(javaTool("javac"), "--release", "21", "-encoding", "UTF-8", "-cp", dependencies, "-d", classes.toString(), output.resolve("src/main/java/ExportedTest.java").toString()), "compile.log")).isZero();
-            List<String> command = List.of(javaTool("java"), "-Daitest.var.username=测试员", "-cp", classes + java.io.File.pathSeparator + dependencies, "ExportedTest");
+            // Pass the Chinese variable through a UTF-8 JSON file: on an English-locale Windows (GitHub runners) a non-ASCII
+            // command-line -D value is mangled by the ANSI code page before the exported program sees it.
+            Files.writeString(output.resolve("variables.json"), "{\"username\":\"测试员\"}", java.nio.charset.StandardCharsets.UTF_8);
+            List<String> command = List.of(javaTool("java"), "-Daitest.variables=" + output.resolve("variables.json"), "-cp", classes + java.io.File.pathSeparator + dependencies, "ExportedTest");
             assertThat(run(command, "run.log")).withFailMessage(Files.readString(output.resolve("run.log"))).isZero();
             assertThat(visits).hasValueGreaterThan(0);
             assets.update(project, assertion.id(), assertion.version(), null, Map.of("expected", "必定失败"), null, "MANUAL");
