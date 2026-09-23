@@ -26,9 +26,7 @@ public class ModelPricingService {
     public Price save(Input input) {
         String model = model(input.modelName());
         if (input.baseVersion() == null || !input.baseVersion().matches("0|[1-9][0-9]{0,17}") || input.enabled() == null) throw Problem.invalid("价目需要有效 baseVersion 和 enabled");
-        String currency = Objects.toString(input.currency(), "");
-        try { if (!currency.matches("[A-Z]{3}")) throw new IllegalArgumentException(); Currency.getInstance(currency); }
-        catch (IllegalArgumentException invalid) { throw Problem.invalid("货币需要有效 ISO 4217 三位代码，例如 CNY 或 USD"); }
+        String currency = currency(input.currency());
         BigDecimal in = rate(input.inputPerMillion()), out = rate(input.outputPerMillion());
         long base = Long.parseLong(input.baseVersion()); Timestamp now = Timestamp.from(Instant.now());
         if (base == 0) {
@@ -36,6 +34,12 @@ public class ModelPricingService {
             catch (DuplicateKeyException conflict) { throw Problem.conflict("此模型价目已设置，请重新载入后保存"); }
         } else if (jdbc.update("UPDATE ai_model_price SET version=version+1,enabled=?,currency=?,input_per_million=?,output_per_million=?,updated_at=? WHERE model_name=? AND version=?", input.enabled(), currency, in, out, now, model, base) != 1) throw Problem.conflict("此模型价目已更新，请重新载入后保存");
         return get(model);
+    }
+    /** Providers bill in ISO currencies, stablecoins, points or credits alike, so only the shape is checked. */
+    static String currency(String value) {
+        String currency = Objects.toString(value, "").strip().toUpperCase(Locale.ROOT);
+        if (!currency.matches("[A-Z0-9][A-Z0-9._-]{0,15}")) throw Problem.invalid("货币代码需要 1–16 位字母、数字或 . _ -，例如 CNY、USD、POINTS");
+        return currency;
     }
     private static String model(String name) { if (name == null || name.isBlank() || name.length() > 200) throw Problem.invalid("模型名称需要 1–200 字符"); return name.strip(); }
     private static BigDecimal rate(String text) {

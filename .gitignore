@@ -3,6 +3,7 @@
 .worktrees/
 .superpowers/
 .workbuddy/
+.codegraph/
 .runtime/
 .tools/
 data/

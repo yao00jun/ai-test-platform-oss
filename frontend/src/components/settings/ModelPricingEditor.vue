@@ -39,12 +39,12 @@ onUnmounted(() => scope.invalidate())
   <section aria-label="模型计价" class="pricing-editor">
     <h3>模型计价</h3>
     <p class="small muted">{{ currentName || '填写模型名称后设置价目' }}<template v-if="saved"> · 版本 {{ saved.version }}</template></p>
-    <p class="small muted">按供应商实际报告的输入、输出 Token 估算。未报告用量时不计算费用；折扣、缓存与其他计费规则需以供应商账单核对。</p>
+    <p class="small muted">按供应商实际报告的输入、输出 Token 估算。未报告用量时不计算费用；折扣、缓存与其他计费规则需以供应商账单核对。货币代码不限于 ISO 币种，可填写服务商自己的计费单位，费用按代码分开汇总。</p>
     <ErrorNotice :error="error" />
     <a-alert v-if="saved && !matches" type="warning">模型名称已改变，请载入当前模型价目后再保存。</a-alert>
     <fieldset :disabled="loading || busy || !matches" class="price-fields">
       <label class="price-toggle"><input v-model="form.enabled" type="checkbox" aria-label="启用成本估算">启用成本估算</label>
-      <label>货币代码<input v-model="form.currency" aria-label="货币代码" class="arco-input" maxlength="3" placeholder="CNY"></label>
+      <label>货币代码<input v-model="form.currency" aria-label="货币代码" class="arco-input" maxlength="16" placeholder="CNY、USD 或服务商自定义单位，如 POINTS"></label>
       <label>输入单价（每百万 Token）<input v-model="form.input" aria-label="输入单价（每百万 Token）" class="arco-input" inputmode="decimal" placeholder="例如 2"></label>
       <label>输出单价（每百万 Token）<input v-model="form.output" aria-label="输出单价（每百万 Token）" class="arco-input" inputmode="decimal" placeholder="例如 3"></label>
     </fieldset>

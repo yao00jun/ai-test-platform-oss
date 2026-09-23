@@ -18,6 +18,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 
 @Tag("slow")
+@org.springframework.test.context.TestPropertySource(properties = "aitest.pipeline.api-batch-size=20")
 class PipelineBoundaryIT extends ExchangeHttpTest {
     @Autowired ModelSettingsService settings;
     @Autowired PipelineService pipelines;

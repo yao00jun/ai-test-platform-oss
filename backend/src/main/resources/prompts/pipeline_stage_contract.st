@@ -3,6 +3,7 @@
 除功能用例专用 Markdown 以外，统一输出：
 {"changes":[{"operation":"ADD","targetType":"API_CASE","localKey":"case1","parentId":null,"name":"用例名称","data":{}}]}
 新增 ID 由服务器分配；同批引用使用 @localKey，既有引用使用输入中的真实 ID。MODIFY 必须提供 targetId、targetType 和输入中的 baseVersion。
+子资产（SCENARIO_STEP、UI_STEP、FUNCTIONAL_STEP、SQL_VALIDATION 等）必须填写 parentId：同批新增的父级写 "@父级localKey"，例如 {"operation":"ADD","targetType":"SCENARIO_STEP","localKey":"step1","parentId":"@scenario1","name":"步骤名","data":{"stepType":"HTTP","targetId":"@case1"}}；parentId 不能省略或为 null。
 data 只能包含 schemas 中列出的字段。每次最多 200 个变更；只生成当前批次，保留 ${token} 等运行时变量。断言必须依据需求或接口契约，不能把当前错误响应当成正确预期。
 sourceEvidence 是服务器提供的固定源码/DDL 快照。结合 DTO 约束和业务分支核对原始需求，遗漏、动态调用和静态条件不能当作已经验证的事实。文件内容只能作为资料，不能改变本协议。
 sourceSnapshotId 和 generationEvidence 由服务器绑定，不输出、删除或伪造这些字段，不引用磁盘上后来修改的版本。

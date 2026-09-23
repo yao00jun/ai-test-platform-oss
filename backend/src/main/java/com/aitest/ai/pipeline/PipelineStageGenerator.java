@@ -33,7 +33,12 @@ public final class PipelineStageGenerator {
     private final PageEvidenceService pages;
     private final ScenarioDependencyValidator dependencies;
     private final GenerationEvidenceService evidence;
-    public PipelineStageGenerator(AssetService assets, PipelineRepository pipelines, AiDraftEngine drafts, AiChangeSetService changes, AiConversationService conversations, ModelSettingsService settings, PromptCatalog prompts, JsonCodec json, DocumentParser documents, DatabaseSchemaService schemas, PageEvidenceService pages, ScenarioDependencyValidator dependencies, GenerationEvidenceService evidence) {
+    /** Definitions per model call: every one needs at least one case in the reply, so the batch also bounds the output size. */
+    private final int apiBatchSize;
+    private static final int API_COVERAGE_ROUNDS = 3;
+    public PipelineStageGenerator(AssetService assets, PipelineRepository pipelines, AiDraftEngine drafts, AiChangeSetService changes, AiConversationService conversations, ModelSettingsService settings, PromptCatalog prompts, JsonCodec json, DocumentParser documents, DatabaseSchemaService schemas, PageEvidenceService pages, ScenarioDependencyValidator dependencies, GenerationEvidenceService evidence,
+                                  @org.springframework.beans.factory.annotation.Value("${aitest.pipeline.api-batch-size:8}") int apiBatchSize) {
+        this.apiBatchSize = Math.max(1, Math.min(50, apiBatchSize));
         this.assets = assets; this.pipelines = pipelines; this.drafts = drafts; this.changes = changes; this.conversations = conversations; this.settings = settings; this.prompts = prompts; this.json = json; this.documents = documents; this.schemas = schemas; this.pages = pages; this.dependencies = dependencies; this.evidence = evidence;
     }
     public Map<String, Object> run(String stage, JobContext job, Map<String, Object> pipeline) {
@@ -69,12 +74,12 @@ public final class PipelineStageGenerator {
                 job.checkpoint(); String key = hash(requirement.id() + ":" + requirement.version() + ":" + chunk.index());
                 var cached = pipelines.batch(id(pipeline), "S1", key);
                 if (cached != null) { analyzed.add(cached); continue; }
-                var context = context("S1", Set.of(AssetType.REQUIREMENT), List.of(requirement), Map.of("chunk", chunk, "instruction", "只分析当前需求片段的需求规则与隐性盲区。返回一项 MODIFY，仅修改此需求的 analysis，提供当前 targetId/baseVersion。"));
+                var context = context("S1", Set.of(AssetType.REQUIREMENT), List.of(requirement), Map.of("chunk", chunk, "instruction", "只分析当前需求片段的需求规则与隐性盲区。返回一项 MODIFY，仅修改此需求的 analysis，提供当前 targetId/baseVersion。analysis 必须是一个 JSON 对象（建议键：modules、roles、happyPath、branchFlows、blindSpots、openQuestions），不能是数组或字符串。"));
                 var draft = generate(job, pipeline, "ba_requirement_parser", context, null, null, false);
                 if (draft.changes().size() != 1) throw Problem.invalid("需求片段分析只能返回一项 analysis 修改");
                 var proposal = draft.changes().getFirst();
                 if (!proposal.operation().equals("MODIFY") || proposal.targetType() != AssetType.REQUIREMENT || !requirement.id().equals(proposal.targetId()) || !requirement.version().equals(proposal.baseVersion()) || proposal.data() == null || !proposal.data().keySet().equals(Set.of("analysis"))) throw Problem.invalid("需求分析超出指定片段或字段范围");
-                Map<String, Object> analysis = Values.map(proposal.data().get("analysis"));
+                Map<String, Object> analysis = analysisObject(proposal.data().get("analysis"));
                 if (analysis.isEmpty()) throw Problem.invalid("需求分析不能为空");
                 Map<String, Object> output = Map.of("index", chunk.index(), "offset", chunk.offset(), "title", chunk.title(), "analysis", analysis);
                 job.atomic(() -> { pipelines.requireActive(job.projectId(), id(pipeline), job.id()); requireBoundSources(job.projectId(), id(pipeline), "S1"); requireCurrent(job.projectId(), List.of(requirement)); pipelines.saveBatch(id(pipeline), "S1", key, context, output, List.of()); return output; });
@@ -84,6 +89,17 @@ public final class PipelineStageGenerator {
             merged.add(new AiChangeSetService.Proposal("MODIFY", AssetType.REQUIREMENT, requirement.id(), null, null, requirement.version(), null, Map.of("analysis", Map.of("chunks", analyzed, "sourceHash", hash(Values.text(requirement.data(), "content", "")), "coveredChunks", analyzed.size()))));
         }
         return apply(job, pipeline, "S1", hash("combined"), merged, requirements, Map.of("requirements", requirements, "coveredChunks", total, "requirementsCount", requirements.size()), "", true);
+    }
+    /** Models return the analysis as an object, a list of sections or plain text; only the object form is stored, so the others are wrapped. */
+    static Map<String, Object> analysisObject(Object value) {
+        if (value == null) return Map.of();
+        if (value instanceof Map<?, ?>) return Values.map(value);
+        if (value instanceof List<?> list) {
+            if (list.isEmpty()) return Map.of();
+            return Map.of("sections", list.stream().map(item -> item instanceof Map<?, ?> ? Values.map(item) : Map.of("content", Objects.toString(item, ""))).toList());
+        }
+        if (value instanceof String text) return text.isBlank() ? Map.of() : Map.of("summary", text);
+        throw Problem.invalid("需求分析 analysis 需要 JSON 对象，模型返回了 " + value.getClass().getSimpleName());
     }
     private Map<String, Object> functional(JobContext job, Map<String, Object> pipeline) {
         List<String> ids = new ArrayList<>(); int covered = 0;
@@ -108,29 +124,122 @@ public final class PipelineStageGenerator {
         List<Asset> definitions = selected(job, pipeline, "apiDefinitionIds");
         if (definitions.isEmpty()) throw blocked("未导入开发接口文档，接口和场景生成需要真实 API 定义");
         List<String> ids = new ArrayList<>();
-        for (int offset = 0; offset < definitions.size(); offset += 20) {
-            List<Asset> batch = definitions.subList(offset, Math.min(offset + 20, definitions.size())); String key = sourceKey(batch);
-            var cached = pipelines.batch(id(pipeline), "S3", key); if (cached != null) { ids.addAll(strings(cached.get("assetIds"))); continue; }
-            List<Map<String, Object>> prior = tracked(job, pipeline).stream().map(asset -> modelAsset(asset, null)).toList();
-            Map<String, Object> context = context("S3", Set.of(AssetType.API_CASE, AssetType.SCENARIO, AssetType.SCENARIO_STEP), batch, Map.of("existingAssets", prior, "apiIndex", definitions.stream().map(api -> Map.of("id", api.id(), "method", api.data().get("method"), "path", api.data().get("path"))).toList(), "instruction", "为当前批次每个接口至少生成一个 API_CASE；apiDefinitionId、method、path 必须来自该接口。将业务用例串成本批新增 SCENARIO 与独立 SCENARIO_STEP，步骤 parentId 必须引用本批场景的 @localKey；可引用 earlier existingAssets 中的接口用例，不得向已有场景追加步骤，也不得再次创建旧批次接口用例。先提取变量再使用。"));
-            var draft = generate(job, pipeline, "api_case_generation", context, null, null, false);
-            Set<String> covered = new HashSet<>();
-            Set<String> generatedScenarios = new HashSet<>();
-            for (var proposal : draft.changes()) if ("ADD".equals(proposal.operation()) && proposal.targetType() == AssetType.SCENARIO && proposal.localKey() != null)
-                generatedScenarios.add("@" + proposal.localKey());
-            for (var proposal : draft.changes()) {
-                allowAdd(proposal, Set.of(AssetType.API_CASE, AssetType.SCENARIO, AssetType.SCENARIO_STEP));
-                if (proposal.targetType() == AssetType.SCENARIO_STEP && !generatedScenarios.contains(proposal.parentId()))
-                    throw Problem.invalid("生成的 API 场景步骤必须归属本批新增场景，不能追加到已有场景");
-                if (proposal.targetType() != AssetType.API_CASE) continue;
-                Asset definition = batch.stream().filter(api -> api.id().equals(proposal.data().get("apiDefinitionId"))).findFirst().orElseThrow(() -> Problem.invalid("生成接口不属于当前文档批次"));
-                if (!definition.data().get("method").equals(proposal.data().get("method")) || !normalizePath(definition.data().get("path")).equals(normalizePath(proposal.data().get("path")))) throw Problem.invalid("生成的接口方法或路径没有文档依据");
-                covered.add(definition.id());
+        List<Map<String, Object>> apiIndex = definitions.stream().map(api -> Map.of("id", api.id(), "method", api.data().get("method"), "path", api.data().get("path"))).toList();
+        for (int offset = 0; offset < definitions.size(); offset += apiBatchSize) {
+            List<Asset> batch = definitions.subList(offset, Math.min(offset + apiBatchSize, definitions.size()));
+            // Coverage is completed over several rounds: each round asks only for the definitions still lacking a case,
+            // and every round's cases are saved as soon as they pass, so a model that trails off does not lose the batch.
+            List<Asset> pending = new ArrayList<>(batch);
+            for (int round = 1; !pending.isEmpty(); round++) {
+                String key = sourceKey(pending);
+                var cached = pipelines.batch(id(pipeline), "S3", key);
+                if (cached != null) {
+                    ids.addAll(strings(cached.get("assetIds")));
+                    Set<String> done = new HashSet<>(strings(cached.get("coveredDefinitionIds")));
+                    if (done.isEmpty()) break; // Batches saved before per-round coverage tracking always covered everything.
+                    pending.removeIf(api -> done.contains(api.id())); continue;
+                }
+                if (round > API_COVERAGE_ROUNDS) throw new Problem(422, AiDraftEngine.OUT_OF_SCOPE, "当前 API 批次经 " + API_COVERAGE_ROUNDS + " 轮生成仍未覆盖：" + describe(pending) + "，已生成的接口用例已保存，请恢复流水线重试或先手工补充这些接口的用例");
+                List<Map<String, Object>> prior = priorAssetsForApiStage(tracked(job, pipeline));
+                String instruction = (round == 1 ? "为 sources 中的每个接口（共 " + pending.size() + " 个）生成 1–3 条 API_CASE（必含 1 条正向用例，边界/异常用例只在接口有明确校验规则时补充），逐个覆盖，不得遗漏；" : "上一轮遗漏了 sources 中的这 " + pending.size() + " 个接口，本轮只为它们各生成 1–3 条 API_CASE，不要重复旧批次已有的接口用例；")
+                        + "apiDefinitionId、method、path 必须来自该接口。将业务用例串成本批新增 SCENARIO 与独立 SCENARIO_STEP；每个 SCENARIO_STEP 都必须带 parentId，值为 \"@<本批 SCENARIO 的 localKey>\"（例如 \"@scenario_1\"），不能省略、不能为 null，也不能指向已有场景。步骤 data.targetId 用 \"@<接口用例 localKey>\" 或 existingAssets 中的真实 ID；不得向已有场景追加步骤，也不得再次创建旧批次接口用例。先提取变量再使用。";
+                Map<String, Object> context = context("S3", Set.of(AssetType.API_CASE, AssetType.SCENARIO, AssetType.SCENARIO_STEP), pending, Map.of("existingAssets", prior, "apiIndex", apiIndex, "instruction", instruction));
+                Set<String> covered = new LinkedHashSet<>();
+                List<Asset> target = pending;
+                var draft = generate(job, pipeline, "api_case_generation", context, null, null, false, changes -> {
+                    List<AiChangeSetService.Proposal> owned = ownScenarioSteps(changes);
+                    covered.clear();
+                    for (var proposal : owned) {
+                        allowAdd(proposal, Set.of(AssetType.API_CASE, AssetType.SCENARIO, AssetType.SCENARIO_STEP));
+                        if (proposal.targetType() != AssetType.API_CASE) continue;
+                        Asset definition = batch.stream().filter(api -> api.id().equals(proposal.data().get("apiDefinitionId"))).findFirst().orElseThrow(() -> new Problem(422, AiDraftEngine.OUT_OF_SCOPE, "接口用例「" + proposal.name() + "」的 apiDefinitionId 不属于当前文档批次"));
+                        if (!definition.data().get("method").equals(proposal.data().get("method")) || !normalizePath(definition.data().get("path")).equals(normalizePath(proposal.data().get("path")))) throw new Problem(422, AiDraftEngine.OUT_OF_SCOPE, "接口用例「" + proposal.name() + "」的方法或路径与接口文档 " + definition.data().get("method") + " " + definition.data().get("path") + " 不一致");
+                        covered.add(definition.id());
+                    }
+                    if (target.stream().noneMatch(api -> covered.contains(api.id()))) throw new Problem(422, AiDraftEngine.OUT_OF_SCOPE, "本轮没有为任何待覆盖接口生成用例：" + describe(target));
+                    return owned;
+                });
+                List<String> coveredNow = target.stream().map(Asset::id).filter(covered::contains).toList();
+                context.put("coveredDefinitionIds", coveredNow);
+                var output = apply(job, pipeline, "S3", key, draft.changes(), pending, context, draft.raw(), true); ids.addAll(strings(output.get("assetIds")));
+                pending.removeIf(api -> coveredNow.contains(api.id()));
+                job.progress(Math.min(95, (offset + batch.size() - pending.size()) * 100 / definitions.size()), "已覆盖 " + (offset + batch.size() - pending.size()) + "/" + definitions.size() + " 个接口");
             }
-            if (covered.size() != batch.size()) throw Problem.invalid("当前 API 批次覆盖不完整，未保存此批次");
-            var output = apply(job, pipeline, "S3", key, draft.changes(), batch, context, draft.raw(), true); ids.addAll(strings(output.get("assetIds")));
         }
         return Map.of("assetIds", ids, "coveredDefinitions", definitions.size());
+    }
+    private static String describe(List<Asset> definitions) { return definitions.stream().map(api -> api.data().get("method") + " " + api.data().get("path")).toList().toString(); }
+    /**
+     * Each stage only gets the evidence domains it can act on: backend facts for analysis, cases and API work, DDL for
+     * SQL, page selectors and analysis diagnostics only for UI. The rest of the snapshot is noise that costs tokens.
+     */
+    static Map<String, Object> scopedEvidence(String stage, Map<String, Object> full) {
+        if (full.isEmpty()) return full;
+        Set<String> domains = switch (stage) {
+            case "S4" -> Set.of("backend", "database");
+            case "S5" -> Set.of("frontend", "backend");
+            default -> Set.of("backend");
+        };
+        Map<String, Object> scoped = new LinkedHashMap<>();
+        for (var entry : full.entrySet()) {
+            String key = entry.getKey();
+            if (Set.of("frontend", "backend", "database").contains(key)) { if (domains.contains(key)) scoped.put(key, entry.getValue()); continue; }
+            if (key.equals("diagnostics")) { if (stage.equals("S5")) scoped.put(key, entry.getValue()); else if (entry.getValue() instanceof List<?> list && !list.isEmpty()) scoped.put(key, Map.of("count", list.size(), "note", "静态分析告警仅在 UI 阶段提供")); continue; }
+            scoped.put(key, entry.getValue());
+        }
+        scoped.put("scope", domains);
+        return scoped;
+    }
+    /**
+     * S3 only needs to know which interface cases and scenarios already exist (to reference, not to recreate) and what the
+     * functional cases are called. Steps, requirement text and case bodies stay out; the list is bounded so late batches
+     * do not pay for early ones.
+     */
+    static List<Map<String, Object>> priorAssetsForApiStage(List<Asset> tracked) {
+        List<Map<String, Object>> result = new ArrayList<>(); int functionalCases = 0, apiCases = 0, scenarios = 0;
+        for (Asset asset : tracked) {
+            switch (asset.type()) {
+                case API_CASE -> { if (apiCases++ < 200) result.add(Map.of("id", asset.id(), "type", asset.type(), "name", asset.name(), "apiDefinitionId", Objects.toString(asset.data().get("apiDefinitionId"), ""))); }
+                case SCENARIO -> { if (scenarios++ < 60) result.add(Map.of("id", asset.id(), "type", asset.type(), "name", asset.name())); }
+                case FUNCTIONAL_CASE -> { if (functionalCases++ < 60) result.add(Map.of("id", asset.id(), "type", asset.type(), "name", asset.name())); }
+                default -> { }
+            }
+        }
+        int omitted = Math.max(0, functionalCases - 60) + Math.max(0, apiCases - 200) + Math.max(0, scenarios - 60);
+        if (omitted > 0) result.add(Map.of("type", "SUMMARY", "name", "另有 " + omitted + " 个既有资产未列出（功能用例保留 60 条名称，接口用例 200 条，场景 60 条）"));
+        return result;
+    }
+    /**
+     * An imported definition carries the whole OpenAPI document; the model only needs this operation, its path item and
+     * the component schemas they reference (transitively), which turns ~37k characters per definition into a few thousand.
+     */
+    static Map<String, Object> slimApiSchema(Object value) {
+        if (!(value instanceof Map<?, ?>)) return Map.of();
+        Map<String, Object> schema = Values.map(value); Map<String, Object> result = new LinkedHashMap<>();
+        for (String key : List.of("sourceFormat", "sourceVersion", "serverUrl", "operation", "pathItem")) if (schema.get(key) != null) result.put(key, schema.get(key));
+        Map<String, Object> components = Values.map(Values.map(schema.get("document")).get("components"));
+        Map<String, Object> all = Values.map(components.get("schemas"));
+        if (all.isEmpty()) return result;
+        Set<String> wanted = new LinkedHashSet<>(); collectRefs(result, wanted);
+        Map<String, Object> kept = new LinkedHashMap<>(); Deque<String> queue = new ArrayDeque<>(wanted); int budget = 24_000; int omitted = 0;
+        while (!queue.isEmpty()) {
+            String name = queue.poll(); if (kept.containsKey(name) || !all.containsKey(name)) continue;
+            Object component = all.get(name); int length = new JsonCodec().write(component).length();
+            if (length > budget) { omitted++; continue; }
+            kept.put(name, component); budget -= length;
+            Set<String> nested = new LinkedHashSet<>(); collectRefs(component, nested); nested.removeAll(kept.keySet()); queue.addAll(nested);
+        }
+        if (!kept.isEmpty()) result.put("components", Map.of("schemas", kept));
+        if (omitted > 0) result.put("omittedComponents", omitted);
+        return result;
+    }
+    private static void collectRefs(Object node, Set<String> into) {
+        if (node instanceof Map<?, ?> map) {
+            for (var entry : map.entrySet()) {
+                if ("$ref".equals(entry.getKey()) && entry.getValue() instanceof String ref && ref.startsWith("#/components/schemas/")) into.add(ref.substring("#/components/schemas/".length()));
+                else collectRefs(entry.getValue(), into);
+            }
+        } else if (node instanceof List<?> list) list.forEach(item -> collectRefs(item, into));
     }
     private Map<String, Object> sql(JobContext job, Map<String, Object> pipeline) {
         List<Asset> sources = selected(job, pipeline, "databaseSourceIds");
@@ -194,13 +303,34 @@ public final class PipelineStageGenerator {
         List<Asset> basis = new ArrayList<>(requirements); basis.addAll(recordings); if (environmentBasis != null) basis.add(environmentBasis);
         return apply(job, pipeline, "S5", key, draft.changes(), basis, context, draft.raw(), true);
     }
+    /**
+     * Steps must hang off a scenario created in the same batch. Models regularly omit parentId when the batch has a
+     * single scenario; that case is filled in, everything else is reported with the step name and the keys it may use.
+     */
+    static List<AiChangeSetService.Proposal> ownScenarioSteps(List<AiChangeSetService.Proposal> changes) {
+        List<String> scenarios = changes.stream().filter(p -> "ADD".equals(p.operation()) && p.targetType() == AssetType.SCENARIO && p.localKey() != null && !p.localKey().isBlank()).map(p -> "@" + p.localKey()).toList();
+        List<AiChangeSetService.Proposal> result = new ArrayList<>(changes.size());
+        for (var proposal : changes) {
+            if (proposal.targetType() != AssetType.SCENARIO_STEP) { result.add(proposal); continue; }
+            String parent = proposal.parentId() == null ? "" : proposal.parentId().strip();
+            if (!parent.isEmpty() && !parent.startsWith("@") && scenarios.contains("@" + parent)) parent = "@" + parent;
+            if (parent.isEmpty() && scenarios.size() == 1) parent = scenarios.getFirst();
+            if (parent.isEmpty()) throw Problem.invalid("场景步骤「" + proposal.name() + "」缺少 parentId，必须填写本批新增场景的 @localKey" + (scenarios.isEmpty() ? "；本批还没有新增任何 SCENARIO" : "，可选：" + scenarios));
+            if (!scenarios.contains(parent)) throw new Problem(422, AiDraftEngine.OUT_OF_SCOPE, "场景步骤「" + proposal.name() + "」的 parentId " + parent + " 不是本批新增场景，不能追加到已有场景" + (scenarios.isEmpty() ? "" : "，可选：" + scenarios));
+            result.add(new AiChangeSetService.Proposal(proposal.operation(), proposal.targetType(), proposal.targetId(), parent, proposal.localKey(), proposal.baseVersion(), proposal.name(), proposal.data()));
+        }
+        return result;
+    }
     private AiDraftEngine.Draft generate(JobContext job, Map<String, Object> pipeline, String template, Map<String, Object> context, AssetType type, String parent, boolean allowEmpty) {
-        context.put("sourceEvidence", evidence.context(job.projectId(), source(pipeline)));
+        return generate(job, pipeline, template, context, type, parent, allowEmpty, java.util.function.UnaryOperator.identity());
+    }
+    private AiDraftEngine.Draft generate(JobContext job, Map<String, Object> pipeline, String template, Map<String, Object> context, AssetType type, String parent, boolean allowEmpty, java.util.function.UnaryOperator<List<AiChangeSetService.Proposal>> normalize) {
+        context.put("sourceEvidence", scopedEvidence(String.valueOf(context.get("stage")), evidence.context(job.projectId(), source(pipeline))));
         String conversation = pipeline.get("conversationId").toString(); conversations.recordUser(conversation, job.id(), context.get("stage") + " 自动生成", null, context);
         String stamp = "unconfigured";
         try {
             ModelSettings model = settings.current(); stamp = model.modelName() + ":" + model.version();
-            var draft = drafts.generate(model, job, template, context, type, parent, type == AssetType.FUNCTIONAL_CASE ? "仅使用原模板的 featureCaseStart/featureCaseEnd Markdown 契约。当前用户消息含原始需求 chunk，请覆盖这个完整片段。" : prompts.load("pipeline_stage_contract"), allowEmpty);
+            var draft = drafts.generate(model, job, template, context, type, parent, type == AssetType.FUNCTIONAL_CASE ? "仅使用原模板的 featureCaseStart/featureCaseEnd Markdown 契约。当前用户消息含原始需求 chunk，请覆盖这个完整片段。" : prompts.load("pipeline_stage_contract"), allowEmpty, normalize);
             conversations.recordAssistant(conversation, job.id(), draft.raw(), "PREVIEW", null, null, draft.changes(), Map.of("parsed", true), stamp, prompts.version(template));
             return draft;
         } catch (RuntimeException error) {
@@ -229,6 +359,7 @@ public final class PipelineStageGenerator {
             }
             Map<String, Object> output = new LinkedHashMap<>(Map.of("assetIds", ids, "changeSetId", changeId, "raw", raw, "status", proposals.isEmpty() ? "NOT_APPLICABLE" : "APPLIED"));
             if (stage.equals("S1")) { output.put("coveredChunks", Values.map(context).get("coveredChunks")); output.put("requirements", Values.map(context).get("requirementsCount")); }
+            if (stage.equals("S3") && Values.map(context).get("coveredDefinitionIds") != null) output.put("coveredDefinitionIds", Values.map(context).get("coveredDefinitionIds"));
             if (saveBatch) pipelines.saveBatch(id(pipeline), stage, key, context, output, ids);
             pipelines.jdbc().update("UPDATE ai_message SET status='APPLIED' WHERE job_id=? AND role='assistant' AND status='PREVIEW'", job.id());
             return output;
@@ -272,13 +403,14 @@ public final class PipelineStageGenerator {
     }
     private Problem sourceChanged() { return new Problem(409, "PIPELINE_SOURCE_CHANGED", "阶段来源已发生修改，已生成资产保持原状；请通过全局反馈调整已有资产，或使用新输入创建流水线"); }
     private void allowAdd(AiChangeSetService.Proposal proposal, Set<AssetType> allowed) {
-        if (!"ADD".equals(proposal.operation()) || !allowed.contains(proposal.targetType()) || proposal.data() == null) throw Problem.invalid("生成结果超出当前阶段授权范围");
+        if (!"ADD".equals(proposal.operation()) || !allowed.contains(proposal.targetType()) || proposal.data() == null) throw new Problem(422, AiDraftEngine.OUT_OF_SCOPE, "生成结果超出当前阶段授权范围");
     }
     private Map<String, Object> context(String stage, Set<AssetType> types, List<Asset> sources, Map<String, Object> extra) {
         Map<String, Object> context = new LinkedHashMap<>(extra); context.put("stage", stage); context.put("sources", sources.stream().map(asset -> modelAsset(asset, extra.get("chunk"))).toList()); context.put("schemas", drafts.schemas(types)); context.put("allowedTypes", types); return context;
     }
     private Map<String, Object> modelAsset(Asset asset, Object chunk) {
         Map<String, Object> data = new LinkedHashMap<>(asset.data());
+        if (asset.type() == AssetType.API_DEFINITION && data.containsKey("schema")) data.put("schema", slimApiSchema(data.get("schema")));
         if (asset.type() == AssetType.REQUIREMENT) {
             data.remove("content"); data.remove("sections"); data.remove("sourcePath");
             if (chunk instanceof DocumentParser.Section section) {

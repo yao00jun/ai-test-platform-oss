@@ -58,6 +58,7 @@ export interface ModelSettings {
   hasApiKey: boolean
   temperature: number
   timeoutSeconds: number
+  trustSelfSigned: boolean
 }
 export type JobStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'INTERRUPTED'
 export interface Job {

@@ -12,6 +12,7 @@ public class ModelSettingsController {
     public ModelSettingsController(ModelSettingsService settings, CompanyModelGateway gateway, ModelPricingService pricing) { this.settings = settings; this.gateway = gateway; this.pricing = pricing; }
     @GetMapping Map<String, Object> get() { return settings.view(); }
     @PutMapping Map<String, Object> put(@RequestBody ModelSettingsService.Input input) { return settings.save(input); }
+    @PostMapping("/models") Map<String, Object> models(@RequestBody ModelSettingsService.ModelListRequest input) { return Map.of("models", settings.listModels(input, gateway)); }
     @GetMapping("/pricing") Object pricing(@RequestParam String modelName) { return pricing.get(modelName); }
     @PutMapping("/pricing") Object pricing(@RequestBody ModelPricingService.Input input) { return pricing.save(input); }
     @PostMapping("/test") Object test() {

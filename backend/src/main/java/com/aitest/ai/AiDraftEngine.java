@@ -11,6 +11,8 @@ import java.util.*;
 
 @Service
 public final class AiDraftEngine {
+    /** Boundary violations (touching assets outside the batch) fail at once; only structural omissions get a repair round. */
+    public static final String OUT_OF_SCOPE = "GENERATION_OUT_OF_SCOPE";
     private final ModelInvocationService gateway;
     private final PromptCatalog prompts;
     private final JsonCodec json;
@@ -19,18 +21,32 @@ public final class AiDraftEngine {
         return generate(model, job, template, context, requestedType, parentId, "", false);
     }
     public Draft generate(ModelSettings model, JobContext job, String template, Map<String, Object> context, AssetType requestedType, String parentId, String contract, boolean allowEmpty) {
+        return generate(model, job, template, context, requestedType, parentId, contract, allowEmpty, java.util.function.UnaryOperator.identity());
+    }
+    /**
+     * {@code normalize} runs inside the format-repair loop: a stage can fix unambiguous omissions itself and reject the
+     * rest with a precise message, which the model then gets one chance to repair instead of the pipeline failing outright.
+     */
+    public Draft generate(ModelSettings model, JobContext job, String template, Map<String, Object> context, AssetType requestedType, String parentId, String contract, boolean allowEmpty, java.util.function.UnaryOperator<List<AiChangeSetService.Proposal>> normalize) {
         Map<String, String> variables = new LinkedHashMap<>(); Values.map(context.get("templateVariables")).forEach((key, value) -> variables.put(key, Objects.toString(value, "")));
         String system = prompts.render(template, variables) + (contract.isBlank() ? "" : "\n\n# 当前平台调用协议（输出结构以此为准）\n" + contract);
         String raw = gateway.complete(model, job, template, "INITIAL", system, json.write(context), token -> job.event("token", Map.of("token", token, "content", token)));
         for (int attempt = 0; ; attempt++) {
-            try { return new Draft(raw, requestedType == AssetType.FUNCTIONAL_CASE && template.equals("functional_case_generation") ? markdown(raw, parentId) : jsonDraft(raw, allowEmpty)); }
+            try { return new Draft(raw, normalize.apply(requestedType == AssetType.FUNCTIONAL_CASE && template.equals("functional_case_generation") ? markdown(raw, parentId) : jsonDraft(raw, allowEmpty))); }
             catch (Problem formatError) {
                 if (formatError.code().equals("GENERATION_BLOCKED")) throw formatError;
+                if (formatError.code().equals(OUT_OF_SCOPE)) throw new Problem(422, OUT_OF_SCOPE, formatError.getMessage(), Map.of("rawOutput", raw));
                 if (attempt != 0) throw new Problem(422, "AI_OUTPUT_INVALID", formatError.getMessage(), Map.of("rawOutput", raw));
                 job.event("progress", Map.of("message", "输出格式需要修复，正在进行一次有限重试"));
-                raw = gateway.complete(model, job, template, "FORMAT_REPAIR", system, json.write(Map.of("context", context, "invalidOutput", raw, "validationError", formatError.getMessage(), "instruction", "仅修复输出结构，不改变作用范围和业务事实")), token -> job.event("token", Map.of("token", token, "content", token)));
+                raw = gateway.complete(model, job, template, "FORMAT_REPAIR", system, json.write(Map.of("context", repairContext(context), "invalidOutput", raw, "validationError", formatError.getMessage(), "instruction", "仅修复输出结构，不改变作用范围和业务事实；原始资料已省略，以 invalidOutput 中的内容为准")), token -> job.event("token", Map.of("token", token, "content", token)));
             }
         }
+    }
+    /** A structural repair only needs the contract-shaped parts of the context; the bulky evidence was already used. */
+    public static Map<String, Object> repairContext(Map<String, Object> context) {
+        Map<String, Object> lean = new LinkedHashMap<>(context);
+        for (String heavy : List.of("sourceEvidence", "existingAssets", "sources", "databaseSchemas", "evidence", "recordings", "runtimeEvidence", "chunk")) lean.remove(heavy);
+        return lean;
     }
     public List<Map<String, Object>> schemas(Set<AssetType> types) {
         return types.stream().map(type -> {

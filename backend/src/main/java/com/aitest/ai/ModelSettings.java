@@ -4,7 +4,10 @@ import com.aitest.asset.AssetValidator;
 import java.net.URI;
 
 public record ModelSettings(String baseUrl, String apiKey, String modelName, double temperature,
-                            int timeoutSeconds, String version) {
+                            int timeoutSeconds, String version, boolean trustSelfSigned) {
+    public ModelSettings(String baseUrl, String apiKey, String modelName, double temperature, int timeoutSeconds, String version) {
+        this(baseUrl, apiKey, modelName, temperature, timeoutSeconds, version, false);
+    }
     public static String normalizeBaseUrl(String value) {
         AssetValidator.httpUrl(value);
         String result = value.replaceAll("/+$", "");

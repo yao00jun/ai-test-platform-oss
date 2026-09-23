@@ -177,9 +177,20 @@ public class JobService {
             Thread.interrupted(); finish(projectId, id, "CANCELLED", Map.of(), "任务已取消");
         } catch (Exception e) {
             Thread.interrupted();
-            String message = e instanceof Problem p ? p.getMessage() : "任务执行错误（" + e.getClass().getSimpleName() + "）";
+            String message = e instanceof Problem p ? p.getMessage() : "任务执行错误（" + e.getClass().getSimpleName() + rootCauseSummary(e) + "）";
+            if (!(e instanceof Problem)) org.slf4j.LoggerFactory.getLogger(JobService.class).error("Job {} failed unexpectedly", id, e);
             finish(projectId, id, "FAILED", Map.of(), message);
         } finally { running.remove(id); slots.release(); }
+    }
+    /** The innermost cause, e.g. the database column that rejected a value, shortened so the UI stays readable. */
+    static String rootCauseSummary(Throwable failure) {
+        Throwable root = failure;
+        while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+        String text = root == failure ? "" : root.getClass().getSimpleName() + ": " + String.valueOf(root.getMessage());
+        if (text.isBlank()) text = String.valueOf(failure.getMessage());
+        text = text == null ? "" : text.replaceAll("\\s+", " ").strip();
+        if (text.isBlank() || text.equals("null")) return "";
+        return "：" + (text.length() > 240 ? text.substring(0, 240) + "…" : text);
     }
     private void finish(String projectId, String id, String status, Object result, String error) {
         transactions.executeWithoutResult(tx -> {

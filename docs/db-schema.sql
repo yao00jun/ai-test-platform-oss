@@ -394,7 +394,7 @@ CREATE TABLE ai_change_item (
   operation VARCHAR(16) NOT NULL,
   target_type VARCHAR(32) NOT NULL,
   target_id VARCHAR(32),
-  parent_id VARCHAR(32),
+  parent_id VARCHAR(160),
   local_key VARCHAR(128),
   base_version BIGINT,
   before_snapshot JSON,
@@ -898,7 +898,7 @@ CREATE TABLE ai_model_price (
   model_name VARCHAR(200) COLLATE utf8mb4_bin PRIMARY KEY,
   version BIGINT NOT NULL,
   enabled BOOLEAN NOT NULL,
-  currency CHAR(3) NOT NULL,
+  currency VARCHAR(16) NOT NULL,
   input_per_million DECIMAL(24,10) NOT NULL,
   output_per_million DECIMAL(24,10) NOT NULL,
   updated_at DATETIME(3) NOT NULL
@@ -925,7 +925,7 @@ CREATE TABLE ai_model_invocation (
   completion_tokens BIGINT,
   total_tokens BIGINT,
   pricing_version BIGINT,
-  currency CHAR(3),
+  currency VARCHAR(16),
   input_per_million DECIMAL(24,10),
   output_per_million DECIMAL(24,10),
   estimated_cost DECIMAL(30,12),
@@ -1095,3 +1095,6 @@ CREATE INDEX ix_message_job_state ON ai_message(job_id, role, status);
 -- V24: recent assets and positions within an asset type / parent scope.
 CREATE INDEX ix_asset_recent ON asset(project_id,asset_type,deleted,updated_at DESC,id DESC);
 CREATE INDEX ix_asset_scope_position ON asset(project_id,asset_type,parent_id,deleted,position);
+
+-- V27__change_item_local_parent_reference.sql
+-- ai_change_item.parent_id widened to VARCHAR(160): "@localKey" references (localKey ≤ 128) did not fit the 32-char ID column.

@@ -69,6 +69,8 @@ aitest:
     base-url: ${AI_TEST_MODEL_BASE_URL:}
     api-key: ${AI_TEST_MODEL_API_KEY:}
     model-name: ${AI_TEST_MODEL_NAME:}
+  pipeline:
+    api-batch-size: ${AI_TEST_API_BATCH_SIZE:8}
   execution:
     concurrency: ${AI_TEST_CONCURRENCY:8}
     browser-workers: ${AI_TEST_BROWSER_WORKERS:2}

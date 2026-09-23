@@ -94,6 +94,41 @@ class ModelTransportBoundaryTest {
         }
     }
 
+    @Test void aConnectionDroppedBeforeAnyResponseIsReplayedExactlyOnce() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (GatewayFixture server = new GatewayFixture(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            if (requests.incrementAndGet() == 1) { exchange.close(); return; }
+            reply(exchange, 200, "text/event-stream", stream("恢复", "stop"));
+        })) {
+            var telemetry = new ModelCallTelemetry();
+            assertThat(new CompanyModelGateway().complete(server.settings(), "输出正文", "开始", token -> { }, () -> { }, telemetry)).isEqualTo("恢复");
+            assertThat(requests).hasValue(2);
+            assertThat(telemetry.httpAttempts()).isEqualTo(2);
+        }
+    }
+
+    @Test void aConnectionThatKeepsDroppingFailsWithAnActionableMessage() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (GatewayFixture server = new GatewayFixture(exchange -> { exchange.getRequestBody().readAllBytes(); requests.incrementAndGet(); exchange.close(); })) {
+            assertThatThrownBy(() -> new CompanyModelGateway().complete(server.settings(), "输出正文", "开始", token -> { }, () -> { }))
+                    .isInstanceOfSatisfying(Problem.class, problem -> { assertThat(problem.code()).isEqualTo("MODEL_REQUEST_FAILED"); assertThat(problem.getMessage()).contains("连接中断"); });
+            assertThat(requests).hasValue(2);
+        }
+    }
+
+    @Test void anErrorObjectEmbeddedInASuccessfulStreamIsRetriedOnceAndThenExplained() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (GatewayFixture server = new GatewayFixture(exchange -> {
+            exchange.getRequestBody().readAllBytes(); requests.incrementAndGet();
+            reply(exchange, 200, "text/event-stream", "data: {\"error\":{\"message\":\"upstream channel busy, please retry\",\"type\":\"relay_error\"}}\n\n");
+        })) {
+            assertThatThrownBy(() -> new CompanyModelGateway().complete(server.settings(), "输出正文", "开始", token -> { }, () -> { }))
+                    .isInstanceOfSatisfying(Problem.class, problem -> { assertThat(problem.code()).isEqualTo("MODEL_REQUEST_FAILED"); assertThat(problem.getMessage()).contains("流式响应").contains("upstream channel busy"); });
+            assertThat(requests).hasValue(2);
+        }
+    }
+
     @Test void truncatedStreamCannotBecomeAValidDraftOrTriggerAnotherGeneration() throws Exception {
         AtomicInteger requests = new AtomicInteger();
         try (GatewayFixture server = new GatewayFixture(exchange -> {

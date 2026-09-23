@@ -76,6 +76,10 @@ class EvalOpsIT extends ExchangeHttpTest {
             var changed = request("PUT", "/api/settings/model/pricing", Map.of("modelName", name, "baseVersion", object(saved).get("version"), "enabled", true, "currency", "CNY", "inputPerMillion", "20", "outputPerMillion", "30"));
             assertThat(changed.statusCode()).isEqualTo(200);
             assertThat(request("PUT", "/api/settings/model/pricing", Map.of("modelName", name, "baseVersion", "0", "enabled", false, "currency", "CNY", "inputPerMillion", "0", "outputPerMillion", "0")).statusCode()).isEqualTo(409);
+            var custom = request("PUT", "/api/settings/model/pricing", Map.of("modelName", name + "-points", "baseVersion", "0", "enabled", true, "currency", " credits.v2 ", "inputPerMillion", "1", "outputPerMillion", "1"));
+            assertThat(custom.statusCode()).as("provider-specific billing units are accepted").isEqualTo(200);
+            assertThat(object(custom)).containsEntry("currency", "CREDITS.V2");
+            assertThat(request("PUT", "/api/settings/model/pricing", Map.of("modelName", name + "-bad", "baseVersion", "0", "enabled", true, "currency", "US D", "inputPerMillion", "1", "outputPerMillion", "1")).statusCode()).isEqualTo(422);
             var response = request("GET", "/api/projects/" + project + "/evalops/invocations", null); assertThat(response.statusCode()).isEqualTo(200);
             assertThat(Values.objects(object(response).get("items"))).singleElement().satisfies(call -> {
                 assertThat(call).containsEntry("currency", "CNY").containsEntry("pricingVersion", object(saved).get("version"));

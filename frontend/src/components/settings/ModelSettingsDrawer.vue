@@ -1,20 +1,24 @@
 <script setup lang="ts">
-import { onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { IconCheckCircle, IconSave } from '@arco-design/web-vue/es/icon'
+import { IconCheckCircle, IconRefresh, IconSave } from '@arco-design/web-vue/es/icon'
 import { aiApi } from '../../api/ai'
 import { RequestScope } from '../../core/request-scope'
 import ErrorNotice from '../common/ErrorNotice.vue'
 import ModelPricingEditor from './ModelPricingEditor.vue'
 
 const visible = defineModel<boolean>('visible', { default: false })
-const form = reactive({ baseUrl: '', apiKey: '', modelName: '' })
+const form = reactive({ baseUrl: '', apiKey: '', modelName: '', trustSelfSigned: false })
+const isHttps = computed(() => form.baseUrl.trim().toLowerCase().startsWith('https://'))
 const hasApiKey = ref(false)
 const loading = ref(false)
 const busy = ref(false)
 const error = ref<unknown>()
 const errors = ref<Record<string, string>>({})
 const testResult = ref<{ ok: boolean; message: string }>()
+const models = ref<string[]>([])
+const modelsLoading = ref(false)
+const modelsMessage = ref('')
 const scope = new RequestScope()
 
 watch(visible, async (open) => {
@@ -23,6 +27,9 @@ watch(visible, async (open) => {
   error.value = undefined
   errors.value = {}
   testResult.value = undefined
+  models.value = []
+  modelsMessage.value = ''
+  modelsLoading.value = false
   loading.value = true
   busy.value = false
   try {
@@ -30,11 +37,30 @@ watch(visible, async (open) => {
     if (!scope.isCurrent(token)) return
     form.baseUrl = result.baseUrl
     form.modelName = result.modelName
+    form.trustSelfSigned = result.trustSelfSigned
     form.apiKey = ''
     hasApiKey.value = result.hasApiKey
   } catch (failure) { if (scope.isCurrent(token)) error.value = failure }
   finally { if (scope.isCurrent(token)) loading.value = false }
 })
+
+async function fetchModels() {
+  errors.value = {}
+  try { const url = new URL(form.baseUrl.trim()); if (!['https:', 'http:'].includes(url.protocol)) throw new Error() } catch { errors.value.baseUrl = '请输入有效的 HTTP 或 HTTPS 地址' }
+  if (!hasApiKey.value && !form.apiKey.trim()) errors.value.apiKey = '请先填写 API Key 再获取模型列表'
+  if (Object.keys(errors.value).length) return
+  const token = scope.begin('settings-models')
+  modelsLoading.value = true
+  error.value = undefined
+  modelsMessage.value = ''
+  try {
+    const result = await aiApi.listModels({ baseUrl: form.baseUrl.trim(), trustSelfSigned: form.trustSelfSigned, ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}) }, token.signal)
+    if (!scope.isCurrent(token)) return
+    models.value = result.models
+    modelsMessage.value = result.models.length ? `已获取 ${result.models.length} 个模型，可下拉选择或继续手填。` : '服务返回了空的模型列表，请手动填写模型名称。'
+  } catch (failure) { if (scope.isCurrent(token)) error.value = failure }
+  finally { if (scope.isCurrent(token)) modelsLoading.value = false }
+}
 
 async function save(test = false) {
   errors.value = {}
@@ -47,7 +73,7 @@ async function save(test = false) {
   error.value = undefined
   testResult.value = undefined
   try {
-    const settings = await aiApi.saveSettings({ baseUrl: form.baseUrl.trim(), modelName: form.modelName.trim(), ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}) })
+    const settings = await aiApi.saveSettings({ baseUrl: form.baseUrl.trim(), modelName: form.modelName.trim(), trustSelfSigned: form.trustSelfSigned, ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}) })
     if (!scope.isCurrent(token)) return
     form.apiKey = ''
     hasApiKey.value = settings.hasApiKey
@@ -67,8 +93,16 @@ onUnmounted(() => scope.invalidate())
     <a-spin :loading="loading" style="width: 100%">
       <a-form :model="form" layout="vertical" :disabled="busy || loading">
         <a-form-item field="baseUrl" label="Base URL" label-component="label" :label-attrs="{ for: 'model-base-url' }" required :validate-status="errors.baseUrl ? 'error' : undefined" :help="errors.baseUrl"><a-input v-model="form.baseUrl" :input-attrs="{ id: 'model-base-url', 'aria-label': 'Base URL' }" placeholder="https://api.example.com/v1" /></a-form-item>
+        <a-form-item v-if="isHttps || form.trustSelfSigned" field="trustSelfSigned" :help="form.trustSelfSigned ? '已跳过证书校验：只在公司内网地址上使用，不要对公网服务开启。' : '公司内部或自签名证书的 https 服务报 TLS 握手失败时勾选；公网服务保持关闭。'">
+          <a-checkbox v-model="form.trustSelfSigned">信任内部/自签名证书</a-checkbox>
+        </a-form-item>
         <a-form-item field="apiKey" label="API Key" label-component="label" :label-attrs="{ for: 'model-api-key' }" :required="!hasApiKey" :validate-status="errors.apiKey ? 'error' : undefined" :help="errors.apiKey || (hasApiKey ? '已保存密钥；留空保留现有密钥。' : '密钥仅用于后端模型调用。')"><a-input-password v-model="form.apiKey" :input-attrs="{ id: 'model-api-key', 'aria-label': 'API Key', autocomplete: 'new-password' }" :placeholder="hasApiKey ? '留空保留现有密钥' : '请输入 API Key'" /></a-form-item>
-        <a-form-item field="modelName" label="模型名称" label-component="label" :label-attrs="{ for: 'model-name' }" required :validate-status="errors.modelName ? 'error' : undefined" :help="errors.modelName"><a-input v-model="form.modelName" :input-attrs="{ id: 'model-name', 'aria-label': '模型名称' }" placeholder="服务商提供的完整模型名称" /></a-form-item>
+        <a-form-item field="modelName" label="模型名称" label-component="label" :label-attrs="{ for: 'model-name' }" required :validate-status="errors.modelName ? 'error' : undefined" :help="errors.modelName || modelsMessage || '可点击右侧按钮从服务商获取模型列表，也可以直接手填。'">
+          <div class="model-name-row">
+            <a-auto-complete v-model="form.modelName" :data="models" :input-attrs="{ id: 'model-name', 'aria-label': '模型名称' }" placeholder="服务商提供的完整模型名称" allow-clear />
+            <a-button :loading="modelsLoading" :disabled="busy || loading" aria-label="获取模型列表" title="从服务商获取模型列表" @click="fetchModels"><template #icon><IconRefresh /></template>获取</a-button>
+          </div>
+        </a-form-item>
       </a-form>
     </a-spin>
     <ErrorNotice :error="error" />
@@ -82,3 +116,8 @@ onUnmounted(() => scope.invalidate())
     </template>
   </a-drawer>
 </template>
+
+<style scoped>
+.model-name-row { display: flex; gap: 8px; align-items: flex-start; }
+.model-name-row :deep(.arco-auto-complete), .model-name-row :deep(.arco-input-wrapper) { flex: 1; min-width: 0; }
+</style>

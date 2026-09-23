@@ -49,9 +49,11 @@ type Page<T> = {items: T[]; total: number};
 
 ## AI 和任务
 
-- `GET /settings/model` → `{baseUrl,modelName,hasApiKey,temperature,timeoutSeconds}`。
-- `PUT /settings/model` `{baseUrl,modelName,apiKey?,temperature?,timeoutSeconds?}` → 同上；空 apiKey 保留现有密钥。
+- `GET /settings/model` → `{baseUrl,modelName,hasApiKey,temperature,timeoutSeconds,trustSelfSigned}`。
+- `PUT /settings/model` `{baseUrl,modelName,apiKey?,temperature?,timeoutSeconds?,trustSelfSigned?}` → 同上；空 apiKey 保留现有密钥。`trustSelfSigned=true` 时模型调用跳过证书链与主机名校验，只用于公司内网自签名/私有 CA 的 https 网关。
 - `POST /settings/model/test` → `{ok,message}`，真实请求，不写资产。
+- 流水线 S3 每次模型调用只带 `aitest.pipeline.api-batch-size`（默认 8，环境变量 `AI_TEST_API_BATCH_SIZE`）个接口定义，且只发送该操作、pathItem 与其引用的 components，不发送整份 OpenAPI 文档；existingAssets 只含既有接口用例/场景摘要与功能用例名称。一批最多 3 轮生成，每轮只补仍未覆盖的接口，已通过的用例立即保存。各阶段的 `sourceEvidence` 按用途裁剪：S1–S3 只带 backend，S4 带 backend+database，S5 带 frontend+backend 与静态分析告警；FORMAT_REPAIR 只回传契约相关字段与无效输出，不重复发送资料。
+- `POST /settings/model/models` `{baseUrl,apiKey?,trustSelfSigned?}` → `{models:[...]}`，向服务商的 OpenAI 兼容 `GET {baseUrl}/models` 取模型列表，用于填写模型名称时下拉选择；空 apiKey 使用已保存密钥，服务商不提供该接口时返回 502 `MODEL_LIST_UNSUPPORTED`，此时手填模型名称即可。
 - `POST /ai/generate` `{projectId,type,parentId?,instruction,sourceIds?,conversationId?,idempotencyKey}` → `{jobId,conversationId}`。显式新会话 ID 隔离生成历史，已有 ID 必须匹配项目、父级和生成类型；同一次提交响应不确定时重试使用原幂等键。
 - `POST /ai/refine-item` `{projectId,targetType,targetId,baseVersion,conversationId?,feedback,targetFields?,applyMode:'REPLACE_ON_SUCCESS'|'PREVIEW',idempotencyKey}` → `{jobId,conversationId}`。
 - `GET /ai/conversations/{id}?projectId=` → `{id,scope,targetId,messages:[{id,role,content,status,createdAt,baseVersion?,appliedVersion?,candidate?,validation?}]}`。
@@ -197,5 +199,5 @@ TEST_PLAN 可带 `sourceSnapshotId/impactId`。运行公共/加密快照的 `gra
 
 - `GET /api/projects/{projectId}/evalops?from=...&to=...`：返回真实 `usage/generation/execution/rca/byModel`，缺少样本、用量或计价资料为 null。时间区间采用 `[from,to)`；`byModel` 按请求模型和配置版本分组。
 - `GET .../evalops/invocations?offset=0&limit=25&modelName=...&modelVersion=...&from=...&to=...`：分页上限 100，保存 HTTP 尝试数、真实用量、耗时、请求/响应模型、模板版本与调用时价目，费用不会随新价目回算。
-- `GET /api/settings/model/pricing?modelName=...` 和 `PUT /api/settings/model/pricing`：价目包含 `modelName/baseVersion/enabled/currency/inputPerMillion/outputPerMillion`，首次版本为 0，后续 CAS 冲突返回 409。
+- `GET /api/settings/model/pricing?modelName=...` 和 `PUT /api/settings/model/pricing`：价目包含 `modelName/baseVersion/enabled/currency/inputPerMillion/outputPerMillion`，首次版本为 0，后续 CAS 冲突返回 409。`currency` 为 1–16 位字母、数字或 `. _ -` 的自由代码（保存时转大写），不限于 ISO 4217，服务商自定义的积分、额度单位同样可用，费用按代码分别汇总。
 - 精确分母、原始响应采集及已知统计边界见 [AI 效能与模型计价](evalops.md)。
