@@ -1,6 +1,7 @@
 package com.aitest.asset;
 
 import com.aitest.common.JsonCodec;
+import com.aitest.execution.ExecutionLimits;
 import com.aitest.common.Problem;
 import org.springframework.stereotype.Component;
 
@@ -32,6 +33,9 @@ public class AssetValidator {
             if (value != null) switch (field.kind()) {
                 case "number" -> {
                     if (!(value instanceof Number n) || n.doubleValue() != n.longValue() || n.longValue() < 0 || n.longValue() > 3_600_000) throw Problem.invalid(field.label() + "必须为 0–3600000 的整数");
+                    long number = n.longValue();
+                    int[] range = numericRange(type, field.key());
+                    if (range != null && (number < range[0] || number > range[1])) throw Problem.invalid(field.label() + "范围为 " + range[0] + "–" + range[1]);
                     value = ((Number) value).longValue();
                 }
                 case "boolean" -> { if (!(value instanceof Boolean)) throw Problem.invalid(field.label() + "必须是布尔值"); }
@@ -98,6 +102,16 @@ public class AssetValidator {
         String action = data.get("action").toString();
         if (action.equals("navigate") && data.get("url").toString().isBlank()) throw Problem.invalid("导航动作需要 URL");
         if (Set.of("click", "fill", "press", "select", "check", "uncheck", "hover", "assertText", "assertVisible", "assertHidden", "assertValue", "extract", "popup").contains(action) && data.get("selector").toString().isBlank()) throw Problem.invalid("此动作需要定位器");
+    }
+    private static int[] numericRange(AssetType type, String field) {
+        if (type == AssetType.API_CASE && field.equals("timeoutMs")) return new int[]{ExecutionLimits.HTTP_TIMEOUT_MIN_MS, ExecutionLimits.HTTP_TIMEOUT_MAX_MS};
+        if (type == AssetType.UI_SCENARIO && field.equals("timeoutMs")) return new int[]{ExecutionLimits.UI_SCENARIO_TIMEOUT_MIN_MS, ExecutionLimits.UI_SCENARIO_TIMEOUT_MAX_MS};
+        if (type == AssetType.UI_STEP && field.equals("timeoutMs")) return new int[]{ExecutionLimits.UI_STEP_TIMEOUT_MIN_MS, ExecutionLimits.UI_STEP_TIMEOUT_MAX_MS};
+        if (type == AssetType.SCENARIO_STEP && field.equals("waitMs")) return new int[]{ExecutionLimits.WAIT_MIN_MS, ExecutionLimits.WAIT_MAX_MS};
+        if (type == AssetType.SQL_VALIDATION && field.equals("timeoutSeconds")) return new int[]{ExecutionLimits.SQL_TIMEOUT_MIN_SECONDS, ExecutionLimits.SQL_TIMEOUT_MAX_SECONDS};
+        if (type == AssetType.SQL_VALIDATION && Set.of("maxRows", "maxAffectedRows").contains(field)) return new int[]{ExecutionLimits.SQL_ROWS_MIN, ExecutionLimits.SQL_ROWS_MAX};
+        if (type == AssetType.AUTH_CONFIG && field.equals("ttlSeconds")) return new int[]{ExecutionLimits.AUTH_TTL_MIN_SECONDS, ExecutionLimits.AUTH_TTL_MAX_SECONDS};
+        return null;
     }
     public static void httpUrl(String value) {
         try { URI uri = URI.create(value); if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null) throw new IllegalArgumentException(); }

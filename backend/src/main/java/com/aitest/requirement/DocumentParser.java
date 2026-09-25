@@ -14,6 +14,10 @@ import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,7 +31,7 @@ public class DocumentParser {
         String content;
         try {
             content = switch (extension) {
-                case "md", "txt", "csv" -> new String(bytes, StandardCharsets.UTF_8).replace("\uFEFF", "");
+                case "md", "txt", "csv" -> text(bytes);
                 case "docx" -> word(bytes);
                 case "doc" -> legacyWord(bytes);
                 case "pdf" -> pdf(bytes);
@@ -35,10 +39,26 @@ public class DocumentParser {
                 default -> throw Problem.invalid("支持 Word、PDF、Excel、Markdown、TXT 和 CSV 文件");
             };
         } catch (IOException | org.apache.poi.EncryptedDocumentException e) { throw Problem.invalid("无法解析文档，文件可能损坏、加密或与扩展名不符"); }
+        catch (RuntimeException e) {
+            if (e instanceof Problem problem) throw problem;
+            if (e.getClass().getName().startsWith("org.apache.poi.")) throw Problem.invalid("无法解析文档，文件可能损坏、加密或与扩展名不符");
+            throw e;
+        }
         content = TextCleaner.normalizeDocument(content);
         if (content.isBlank()) throw Problem.invalid("文档没有可提取文本；扫描 PDF 需要先进行 OCR");
         if (content.length() > 2_000_000) throw Problem.invalid("文档正文超过 200 万字符，请拆分文档");
         return new ParsedDocument(content, sections(content));
+    }
+    private String text(byte[] bytes) {
+        try { return decode(bytes, StandardCharsets.UTF_8); }
+        catch (CharacterCodingException invalidUtf8) {
+            try { return decode(bytes, Charset.forName("GBK")); }
+            catch (CharacterCodingException invalidGbk) { throw Problem.invalid("文本编码不是有效的 UTF-8 或 GBK，请另存为 UTF-8 后重试"); }
+        }
+    }
+    private static String decode(byte[] bytes, Charset charset) throws CharacterCodingException {
+        String result = charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
+        return result.startsWith("\uFEFF") ? result.substring(1) : result;
     }
     private String word(byte[] bytes) throws IOException {
         try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {

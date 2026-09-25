@@ -95,13 +95,17 @@ public class SourceAnalysisService implements JobHandler {
         List<Object> tables = new ArrayList<>();
         int processed = 0;
         files.sort(Comparator.comparing(SourceFile::kind).thenComparing(SourceFile::path));
+        // An <include> may name a fragment in another mapper of the same code base, so fragments are gathered first.
+        Map<String, MapperXmlParser.Fragments> fragments = new HashMap<>();
+        for (SourceFile file : files) if (Set.of("BACKEND", "BASELINE").contains(file.kind()) && !file.path().toLowerCase(Locale.ROOT).endsWith(".java"))
+            fragments.computeIfAbsent(file.kind(), kind -> new MapperXmlParser.Fragments()).collect(file.content());
         for (SourceFile file : files) {
             job.checkpoint();
             if (Set.of("BACKEND", "BASELINE").contains(file.kind())) {
                 var target = file.kind().equals("BACKEND") ? backend : baselineBackend;
                 List<SourceDiagnostic> fileDiagnostics = new ArrayList<>();
                 if (file.path().toLowerCase(Locale.ROOT).endsWith(".java")) java.parse(file.path(), file.content(), fileDiagnostics).forEach((key, values) -> target.get(key).addAll(values));
-                else target.get("mapperStatements").addAll(mapper.parse(file.path(), file.content(), fileDiagnostics));
+                else target.get("mapperStatements").addAll(mapper.parse(file.path(), file.content(), fileDiagnostics, fragments.get(file.kind())));
                 fileDiagnostics.forEach(d -> diagnostics.add(new SourceDiagnostic(d.severity(), d.code(), file.kind(), d.path(), d.line(), d.message())));
             }
             else if (file.kind().equals("FRONTEND")) frontend.parse(file.path(), file.content(), diagnostics).forEach((key, values) -> browser.get(key).addAll(values));

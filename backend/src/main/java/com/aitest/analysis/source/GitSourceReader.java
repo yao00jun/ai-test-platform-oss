@@ -53,12 +53,54 @@ public final class GitSourceReader {
             int ancestry = ref.length(); for (char marker : new char[]{'~', '^'}) { int index = ref.indexOf(marker); if (index >= 0) ancestry = Math.min(ancestry, index); }
             String fetchRef = ref.substring(0, ancestry), suffix = ref.substring(ancestry);
             Runnable bounded = () -> { checkpoint.run(); enforceDiskLimit(repository); };
-            GitCommands.text(repository, List.of("fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", url, fetchRef), timeout, bounded);
+            fetch(repository, url, fetchRef, bounded);
             target = "FETCH_HEAD" + suffix;
         }
         String revision = GitCommands.text(repository, List.of("rev-parse", "--verify", "--end-of-options", target + "^{commit}"), timeout, checkpoint);
         if (!revision.matches("[0-9a-f]{40}|[0-9a-f]{64}")) throw Problem.invalid("无法解析为固定 Git 提交");
         return revision;
+    }
+    private void fetch(Path repository, String url, String ref, Runnable checkpoint) {
+        try {
+            GitCommands.text(repository, List.of("fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--filter=blob:none", "--depth=50", "--", url, ref), timeout, checkpoint);
+        } catch (Problem failure) {
+            String message = Objects.toString(failure.getMessage(), "").toLowerCase(Locale.ROOT);
+            if (!"GIT_READ_FAILED".equals(failure.code()) || !message.contains("shallow capabilities")) throw failure;
+            // Dumb HTTP servers cannot advertise shallow capabilities. Retry without the
+            // optimization; reset the failed shallow negotiation first because Git can
+            // leave state that makes a second fetch wait for smart protocol negotiation.
+            resetBareRepository(repository, checkpoint);
+            List<String> arguments = new ArrayList<>(List.of("fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", url));
+            // Dumb HTTP exposes the advertised default branch but not shallow/ref
+            // negotiation. Let Git select that branch for the fallback; explicit refs
+            // already use the optimized path and retain their exact revision check.
+            if (!"HEAD".equals(ref)) arguments.add(ref);
+            GitCommands.text(repository, arguments, timeout, checkpoint);
+        }
+    }
+    private void resetBareRepository(Path repository, Runnable checkpoint) {
+        try (var children = Files.list(repository)) {
+            for (Path child : children.toList()) {
+                deleteTree(child);
+                checkpoint.run();
+            }
+        } catch (IOException failure) {
+            throw Problem.invalid("无法重置 Git 临时仓库");
+        }
+        GitCommands.text(repository, List.of("init", "--bare", "--quiet"), timeout, checkpoint);
+    }
+    private static void deleteTree(Path root) throws IOException {
+        Files.walkFileTree(root, new SimpleFileVisitor<>() {
+            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.deleteIfExists(file);
+                return FileVisitResult.CONTINUE;
+            }
+            @Override public FileVisitResult postVisitDirectory(Path directory, IOException failure) throws IOException {
+                if (failure != null) throw failure;
+                Files.deleteIfExists(directory);
+                return FileVisitResult.CONTINUE;
+            }
+        });
     }
     private SourceCollector.CollectionResult collect(Path repository, String kind, String location, String revision, SourceBudget budget, Runnable checkpoint) throws IOException {
         byte[] tree = GitCommands.run(repository, List.of("ls-tree", "-r", "-l", "-z", revision), new byte[0], 16 * 1024 * 1024, timeout, checkpoint);

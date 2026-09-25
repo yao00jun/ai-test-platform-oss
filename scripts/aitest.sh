@@ -11,6 +11,7 @@
 #     logs               实时看后端日志（--errors 看错误日志，--tail 100）
 #     check              启动前体检：Java、MySQL、目录、浏览器内核、模型配置（--test-model 真实调一次模型）
 #     backup             一致备份到 instance/backups（--destination-directory DIR，--leave-stopped 备份后不重启）
+#     upgrade            从当前新发行包就地升级旧安装目录（--target DIR；--yes 跳过确认）
 #     restore            把备份恢复到一个新的空实例：restore --backup-directory DIR --instance-directory DIR
 #     install-browsers   安装 Playwright 浏览器内核（--browsers chromium,firefox,webkit；--dry-run 只预览；--with-deps 同时装系统依赖，需要 root）
 #     start / stop       只启停后端进程，不碰 MySQL（up/down 内部调用；stop --force 强制结束）
@@ -496,6 +497,8 @@ cmd_start() {
     [[ -f "$CFG_RUN_DIR/restore-incomplete.json" ]] && die '上一次恢复没有完成。请查看 run/restore-incomplete.json，并恢复到一个新的空实例后再启动。'
     local existing; existing="$(managed_pid "$CFG_RUN_DIR")"
     [[ -n "$existing" ]] && { echo "实例已在运行（PID $existing）：$(json_get "$CFG_RUN_DIR/state.json" baseUrl)"; return; }
+    local previous_hash=''
+    [[ -f "$CFG_RUN_DIR/state.json" ]] && previous_hash="$(json_get "$CFG_RUN_DIR/state.json" masterKeyHash '')"
     jar="$(resolve_jar "$jar")"
     local java; java="$(java_or_install "$CFG_JAVA_HOME")"
     mkdir -p "$CFG_RUN_DIR" "$CFG_LOG_DIR" "$CFG_STORAGE"
@@ -530,7 +533,12 @@ cmd_start() {
         sleep 0.5
     done
     [[ $ready -eq 1 ]] || { kill "$pid" 2>/dev/null || true; die "启动超时（$timeout 秒）。请查看日志：$stdout"; }
-    json_set "$CFG_RUN_DIR/state.json" "masterKeyHash=$(master_key_hash)" "status=RUNNING"
+    local current_hash; current_hash="$(master_key_hash)"
+    if [[ -n "$previous_hash" && "$previous_hash" != "$current_hash" ]]; then
+        kill "$pid" 2>/dev/null || true
+        die '当前主密钥与上次运行的实例不一致。请从备份恢复 .master-key，或设置与原密钥一致的 AI_TEST_MASTER_KEY；没有覆盖旧的密钥指纹。'
+    fi
+    json_set "$CFG_RUN_DIR/state.json" "masterKeyHash=$current_hash" "status=RUNNING"
     echo "AI-Test-Platform 已就绪：$base_url（PID $pid）"
     echo "日志：$stdout"
 }
@@ -670,6 +678,72 @@ PY
     [[ $was_running -eq 1 && $leave_stopped -eq 0 ]] && cmd_start --instance-directory "$CFG_INSTANCE" --config-path "$CFG_CONFIG_PATH" --jar-path "$jar"
     return $status
 }
+
+release_version() {
+    local root="$1"
+    [[ -f "$root/release.json" ]] || { echo '未知版本'; return; }
+    json_get "$root/release.json" version '未知版本'
+}
+
+copy_missing_tree() {
+    local source="$1" destination="$2"
+    [[ -d "$source" ]] || return 0
+    mkdir -p "$destination"
+    # cp -n keeps files already supplied by the old installation and still
+    # propagates permission, disk and other I/O failures to the caller.
+    cp -a -n -- "$source/." "$destination/" || die "复制发行包工具目录失败：$source -> $destination"
+}
+
+cmd_upgrade() {
+    local target='' yes=0
+    while [[ $# -gt 0 ]]; do case "$1" in
+        --target) target="$2"; shift 2 ;; --yes) yes=1; shift ;;
+        *) die "upgrade 不认识的选项：$1" ;;
+    esac; done
+    [[ -n "$target" ]] || die '用法：upgrade --target <旧安装目录> [--yes]'
+    [[ $IS_SOURCE_TREE -eq 0 && -f "$RELEASE_JAR" ]] || die 'upgrade 必须从包含 app.jar 的新发行包运行。'
+    target="$(cd "$target" && pwd)" || die "旧安装目录不存在：$target"
+    [[ "$target" != "$PROJECT_ROOT" ]] || die '旧安装目录不能是当前新发行包目录。'
+    for required in app.jar scripts/aitest.sh instance; do [[ -e "$target/$required" ]] || die "旧安装目录缺少 $required，不能升级。"; done
+    local old_version new_version; old_version="$(release_version "$target")"; new_version="$(release_version "$PROJECT_ROOT")"
+    echo "旧版本：$old_version"; echo "新版本：$new_version"
+    if [[ $yes -eq 0 ]]; then
+        read -r -p '升级会先备份并停止旧实例，然后修改旧文件夹。确认继续请输入 YES：' answer
+        [[ "$answer" == YES ]] || die '已取消升级，没有修改旧安装目录。'
+    fi
+    step '1/6 备份旧实例'
+    bash "$target/scripts/aitest.sh" backup --instance-directory "$target" --leave-stopped
+    step '2/6 停止旧实例和数据库'
+    bash "$target/scripts/aitest.sh" down --instance-directory "$target"
+    local parent leaf rollback; parent="$(dirname "$target")"; leaf="$(basename "$target")"
+    rollback="$parent/${leaf}-升级前-$(date +%Y%m%d-%H%M%S)"
+    [[ ! -e "$rollback" ]] || rollback="$rollback-$$"
+    step '3/6 创建升级前回退副本'
+    cp -a "$target" "$rollback"
+    ok "回退副本：$rollback"
+    [[ -d "$target/.runtime/mysql/data" ]] || warn '旧实例的 MySQL 数据目录不在安装文件夹内，升级前副本不包含数据库；逻辑备份仍然已保存。'
+    step '4/6 替换程序文件'
+    local directory name
+    for directory in scripts docs database licenses; do
+        [[ -d "$PROJECT_ROOT/$directory" ]] || continue
+        rm -rf "$target/$directory"
+        cp -a "$PROJECT_ROOT/$directory" "$target/$directory"
+    done
+    for name in app.jar README.md NOTICE.md release.json SHA256SUMS config.example.json source.zip; do
+        [[ -f "$PROJECT_ROOT/$name" ]] && cp -f "$PROJECT_ROOT/$name" "$target/$name"
+    done
+    copy_missing_tree "$PROJECT_ROOT/.tools" "$target/.tools"
+    ok '已保留 instance、data、.runtime，并补齐未覆盖的 .tools 子目录。'
+    step '5/6 启动新版本'
+    bash "$target/scripts/aitest.sh" up --instance-directory "$target" --no-browser
+    read_config "$target"
+    local url; url="$(json_get "$CFG_RUN_DIR/state.json" baseUrl)"
+    health_up "$url" || die "升级后健康检查未通过，请查看 $(json_get "$CFG_RUN_DIR/state.json" stdout '')"
+    step '6/6 完成'
+    echo "升级完成：$target（$new_version）"
+    echo "如需回退：停止实例，把旧目录改名，再把 $rollback 改回 $leaf。"
+}
+
 cmd_restore() {
     local backup='' instance='' config_path=''
     while [[ $# -gt 0 ]]; do case "$1" in
@@ -902,7 +976,7 @@ PY
     local file
     for file in "$PROJECT_ROOT"/docs/*.md "$PROJECT_ROOT"/docs/*.sql; do
         [[ -f "$file" ]] || continue
-        case "$(basename "$file")" in roadmap.md|codex-implementation-prompt.md|session-handoff-2026-09-18.md) continue ;; esac
+        case "$(basename "$file")" in roadmap.md|codex-implementation-prompt.md|session-handoff-*.md) continue ;; esac
         cp "$file" "$release_root/docs/"
     done
     [[ -d "$PROJECT_ROOT/docs/prompts" ]] && cp -r "$PROJECT_ROOT/docs/prompts" "$release_root/docs/prompts"
@@ -971,7 +1045,7 @@ fi
 case "$command" in
     up) cmd_up "$@" ;; down) cmd_down "$@" ;; restart) cmd_down --keep-mysql "$@"; cmd_up "$@" ;; status) cmd_status "$@" ;; logs) cmd_logs "$@" ;;
     check) cmd_check "$@" ;; start) cmd_start "$@" ;; stop) cmd_stop "$@" ;; backup) cmd_backup "$@" ;; restore) cmd_restore "$@" ;; install-browsers) cmd_install_browsers "$@" ;;
-    build) cmd_build "$@" ;; verify) cmd_verify "$@" ;; clean) cmd_clean "$@" ;; mysql) cmd_mysql "$@" ;; reset-test-db) cmd_reset_test_db "$@" ;; maven) maven "$@" ;;
+    build) cmd_build "$@" ;; verify) cmd_verify "$@" ;; clean) cmd_clean "$@" ;; mysql) cmd_mysql "$@" ;; reset-test-db) cmd_reset_test_db "$@" ;; maven) maven "$@" ;; upgrade) cmd_upgrade "$@" ;;
     help|-h|--help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' ;;
     *) die "未知命令：$command。运行 scripts/aitest.sh help 查看用法。" ;;
 esac

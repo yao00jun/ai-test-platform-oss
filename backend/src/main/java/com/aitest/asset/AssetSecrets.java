@@ -15,7 +15,7 @@ public class AssetSecrets {
     private final JsonCodec json;
     public AssetSecrets(SecretProtector secrets, JsonCodec json) { this.secrets = secrets; this.json = json; }
 
-    private boolean encrypted(AssetType type, FieldDefinition field) {
+    public static boolean encrypted(AssetType type, FieldDefinition field) {
         return field.kind().equals("password") || (type == AssetType.AUTH_CONFIG && field.key().equals("loginPayload"))
                 || (type == AssetType.ENVIRONMENT && List.of("headers", "variables").contains(field.key()));
     }
@@ -44,7 +44,9 @@ public class AssetSecrets {
         return withData(asset, data);
     }
     public Object redactValue(String key, Object value) {
-        if (key.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]", "").matches(".*(password|passwd|authorization|apikey|secret|token|cookie).*")) {
+        String normalized = key.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]", "");
+        // A path to a token (tokenJsonPath) is configuration, not a credential; masking it made it impossible to review.
+        if (!normalized.endsWith("path") && normalized.matches(".*(password|passwd|authorization|apikey|secret|token|cookie).*")) {
             return value == null || value.toString().isEmpty() ? value : SecretProtector.MASK;
         }
         if (value instanceof Map<?, ?> map) {

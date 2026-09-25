@@ -51,6 +51,7 @@ public class AiChangeSetService {
                 if (proposal.targetId() == null || !seen.add(proposal.targetId())) throw Problem.invalid("变更集不能重复修改同一目标");
                 before = assets.get(projectId, proposal.targetId());
                 if (before.type() != proposal.targetType()) throw Problem.invalid("变更目标类型不匹配");
+                if (proposal.baseVersion() == null || !proposal.baseVersion().matches("[0-9]{1,18}")) throw Problem.invalid("变更「" + Objects.toString(proposal.name(), proposal.targetId()) + "」缺少有效的 baseVersion");
                 AssetService.requireVersion(before, proposal.baseVersion());
                 if (!local && before.confirmed()) throw new Problem(409, "PROTECTED_ASSET", "已确认的人工保护资产不能被全局变更覆盖", Map.of("targetId", before.id()));
                 if (proposal.operation().equals("MODIFY")) {
@@ -69,6 +70,43 @@ public class AiChangeSetService {
         }
         return id;
     }
+    /**
+     * The checks {@link #create} applies, run while the model can still repair its answer: each message names the item and
+     * says what to change, so one slip costs a repair round instead of the whole generation. Nothing is written.
+     */
+    public List<Proposal> preflight(String projectId, List<Proposal> proposals) {
+        Map<String, AssetType> local = new HashMap<>();
+        for (var proposal : proposals) {
+            if (proposal.operation() == null || !Set.of("ADD", "MODIFY", "DELETE").contains(proposal.operation()) || proposal.targetType() == null)
+                throw Problem.invalid(label(proposal) + "的 operation 只能是 ADD、MODIFY、DELETE，targetType 必须是 schemas 中的类型");
+            if ("ADD".equals(proposal.operation()) && proposal.localKey() != null
+                    && (!proposal.localKey().matches("[A-Za-z0-9_-]{1,128}") || local.put("@" + proposal.localKey(), proposal.targetType()) != null))
+                throw Problem.invalid(label(proposal) + "的 localKey「" + proposal.localKey() + "」不合法或重复：只能用字母、数字、下划线和连字符，且本批唯一");
+        }
+        var creation = assets.creationValidation(projectId, local);
+        for (var proposal : proposals) {
+            try {
+                if ("ADD".equals(proposal.operation())) {
+                    if (proposal.targetId() != null) throw Problem.invalid("新增资产不要填写 targetId，ID 由服务器分配");
+                    creation.validate(proposal.targetType(), proposal.parentId(), proposal.name(), proposal.data() == null ? Map.of() : proposal.data());
+                    continue;
+                }
+                if (proposal.targetId() == null || proposal.targetId().isBlank()) throw Problem.invalid("修改或删除必须填写输入中的 targetId");
+                Asset current = assets.getInternal(projectId, proposal.targetId());
+                if (current.type() != proposal.targetType()) throw Problem.invalid("targetType 应为 " + current.type() + "，与 targetId 指向的资产不一致");
+                if (proposal.baseVersion() == null || !proposal.baseVersion().matches("[0-9]{1,18}")) throw Problem.invalid("baseVersion 必须照抄输入中该资产的 version");
+                // A well-formed but stale version means someone edited the asset meanwhile: a conflict, never something to "repair".
+                AssetService.requireVersion(current, proposal.baseVersion());
+                if (current.confirmed()) throw Problem.invalid("该资产已被人工确认保护，不能修改或删除，请去掉这一项");
+            } catch (Problem problem) {
+                if (problem.status() == 404) throw Problem.invalid(label(proposal) + "引用了不存在的资产，parentId 与 targetId 只能用本批 @localKey 或输入中的真实 id");
+                if (problem.status() != 422) throw problem;
+                throw Problem.invalid(label(proposal) + "：" + problem.getMessage());
+            }
+        }
+        return proposals;
+    }
+    private static String label(Proposal proposal) { return (proposal.targetType() == null ? "变更" : proposal.targetType().label()) + "「" + Objects.toString(proposal.name(), "") + "」"; }
     public Map<String, Object> get(String projectId, String id) {
         repository.project(projectId);
         var rows = jdbc.queryForList("SELECT * FROM ai_change_set WHERE id=? AND project_id=?", id, projectId);

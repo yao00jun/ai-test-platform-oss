@@ -17,8 +17,8 @@ public final class SqlSchemaParser {
             try {
                 var statement = CCJSqlParserUtil.parse(fragment, parser -> parser.withUnsupportedStatements(true).withTimeOut(5000));
                 if (!(statement instanceof CreateTable table)) {
-                    if (statement == null || !Set.of("SetStatement", "UseStatement", "Comment", "Insert", "Commit", "StartTransaction", "CreateSchema").contains(statement.getClass().getSimpleName()))
-                        diagnostics.add(SourceDiagnostic.warning("UNSUPPORTED_DDL", "DDL", path, "第 " + ordinal + " 条语句没有纳入建表元数据：" + (statement == null ? "解析失败" : statement.getClass().getSimpleName())));
+                    if (statement == null) diagnostics.add(new SourceDiagnostic("ERROR", "DDL_PARSE_ERROR", "DDL", path, 0, "第 " + ordinal + " 条 DDL 不能完整解析"));
+                    else diagnostics.add(new SourceDiagnostic("INFO", "DDL_STATEMENT_IGNORED", "DDL", path, 0, "第 " + ordinal + " 条语句不是建表定义，未纳入表结构元数据：" + statement.getClass().getSimpleName()));
                     continue;
                 }
                 List<Map<String, Object>> columns = new ArrayList<>(), indexes = new ArrayList<>();

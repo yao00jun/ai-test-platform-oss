@@ -57,8 +57,11 @@ const server = createServer(async (request, response) => {
     response.writeHead(200, { 'content-type': 'text/event-stream' })
     if (reply.parentFromTargetCase) {
       const context = JSON.parse(input.messages.findLast(message => message.role === 'user').content)
-      if (context.stage !== 'S4' || typeof context.targetCase?.id !== 'string') throw new Error('Expected actual S4 target case context')
-      for (const change of reply.content.changes) change.parentId = context.targetCase.id
+      const targetIds = Array.isArray(context.targetCases)
+        ? context.targetCases.map(target => target?.id).filter(id => typeof id === 'string')
+        : typeof context.targetCase?.id === 'string' ? [context.targetCase.id] : []
+      if (context.stage !== 'S4' || targetIds.length === 0) throw new Error('Expected actual S4 target case context')
+      for (const [index, change] of reply.content.changes.entries()) change.parentId = targetIds[Math.min(index, targetIds.length - 1)]
     }
     const content = typeof reply.content === 'string' ? reply.content : JSON.stringify(reply.content)
     for (let offset = 0; offset < content.length; offset += 50) {

@@ -25,7 +25,7 @@ public class ApiExceptionHandler {
         body.put("details", problem.details()); body.put("requestId", UUID.randomUUID().toString());
         return ResponseEntity.status(problem.status()).body(body);
     }
-    @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentNotValidException.class, IllegalArgumentException.class})
+    @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentNotValidException.class})
     ResponseEntity<?> badRequest(Exception exception) {
         return problem(Problem.invalid("请求字段无效，请检查必填字段和 JSON 格式"));
     }
@@ -42,7 +42,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(Exception.class)
     ResponseEntity<?> unexpected(Exception exception) {
         String requestId = UUID.randomUUID().toString();
-        LOG.error("Request {} failed ({})", requestId, exception.getClass().getSimpleName());
+        LOG.error("Request {} failed", requestId, exception);
         return ResponseEntity.internalServerError().body(Map.of("code", "INTERNAL_ERROR", "message", "操作失败，请根据请求编号查看服务日志", "requestId", requestId));
     }
 }

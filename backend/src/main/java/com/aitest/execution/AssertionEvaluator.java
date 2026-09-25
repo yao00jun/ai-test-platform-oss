@@ -12,11 +12,13 @@ import com.google.re2j.Pattern;
 public final class AssertionEvaluator {
     private static final Set<String> TYPES = Set.of("status_code", "status", "header", "jsonpath", "text", "response_time", "schema", "row_count", "field", "affected_rows");
     private static final Set<String> OPERATORS = Set.of("eq", "ne", "contains", "not_contains", "gt", "gte", "lt", "lte", "exists", "not_exists", "matches");
+    private static final Set<String> KEYS = Set.of("type", "operator", "path", "jsonpath", "field", "expected", "row");
     private final JsonCodec json;
     private final VariableResolver resolver;
     public AssertionEvaluator(JsonCodec json, VariableResolver resolver) { this.json = json; this.resolver = resolver; }
     public void validate(List<Map<String, Object>> specs) {
         for (Map<String, Object> spec : specs) {
+            for (String key : spec.keySet()) if (!KEYS.contains(key)) throw Problem.invalid("断言不支持字段: " + key);
             String type = Values.text(spec, "type", spec.containsKey("field") ? "field" : "jsonpath");
             if (!TYPES.contains(type)) throw Problem.invalid("不支持的断言类型: " + type);
             String operator = Values.text(spec, "operator", "eq");

@@ -40,9 +40,10 @@ public final class AiGenerationService implements JobHandler {
                 : request.sourceIds().stream().map(id -> assets.get(job.projectId(), id)).toList();
         Set<AssetType> allowed = AiDraftEngine.generatedTypes(request.type());
         Map<String, Object> context = new LinkedHashMap<>();
-        context.put("instruction", request.instruction()); context.put("assets", source); context.put("project", assets.get(job.projectId(), job.projectId()));
+        // Without a selection the whole project is the reference material; it is sent within a budget, OpenAPI documents slimmed.
+        context.put("instruction", request.instruction()); context.put("assets", ModelContextBudget.assets(source, 120_000, json)); context.put("project", assets.get(job.projectId(), job.projectId()));
         context.put("targetType", request.type()); context.put("parentId", request.parentId()); context.put("schemas", drafts.schemas(allowed));
-        context.put("history", conversations.messages(job.projectId(), conversation));
+        context.put("history", ModelContextBudget.history(conversations.messages(job.projectId(), conversation)));
         context.put("sourceEvidence", evidence.contexts(job.projectId(), source, request.sourceSnapshotId()));
         Map<String, Object> executionMetrics = quality ? metrics.capture(job.projectId(), request.runId()) : Map.of();
         if (quality) { context.put("executionMetrics", executionMetrics); context.put("templateVariables", metrics.templateVariables(executionMetrics)); }
@@ -51,15 +52,19 @@ public final class AiGenerationService implements JobHandler {
         try {
             ModelSettings model = settings.current(); stamp = model.modelName() + ":" + model.version();
             job.progress(10, "正在依据当前需求和资产生成草稿");
-            AiDraftEngine.Draft draft = drafts.generate(model, job, template, context, request.type(), request.parentId(), quality ? QualityMetricsService.CONTRACT : "", false); raw = draft.raw();
+            // Every check below names what to change, so it runs where the model still gets one repair round.
+            AiDraftEngine.Draft draft = drafts.generate(model, job, template, context, request.type(), request.parentId(), quality ? QualityMetricsService.CONTRACT : "", false, proposed -> {
+                for (var proposal : proposed) {
+                    String item = "「" + proposal.name() + "」";
+                    if (!allowed.contains(proposal.targetType())) throw Problem.invalid(item + "的类型 " + proposal.targetType() + " 不在本次允许生成的类型 " + allowed + " 中");
+                    if (proposal.targetType() != AssetType.PROJECT && !"ADD".equals(proposal.operation())) throw Problem.invalid(item + "：初次生成只能新增草稿（operation 用 ADD），修改既有资产请使用反馈调优");
+                    if (proposal.targetType() == AssetType.PROJECT && (!"MODIFY".equals(proposal.operation()) || !job.projectId().equals(proposal.targetId()))) throw Problem.invalid(item + "：项目资料只能以 MODIFY 修改当前项目");
+                    if (request.parentId() != null && proposal.targetType() == request.type() && !Objects.equals(request.parentId(), proposal.parentId())) throw Problem.invalid(item + "的 parentId 必须是 " + request.parentId());
+                    if (proposal.data() != null && proposal.targetType().fields().stream().anyMatch(field -> field.kind().equals("password") && proposal.data().containsKey(field.key()))) throw Problem.invalid(item + "：AI 不能生成凭证字段");
+                }
+                return quality ? proposed : changes.preflight(job.projectId(), proposed);
+            }); raw = draft.raw();
             List<AiChangeSetService.Proposal> proposals = quality ? metrics.ground(draft.changes(), executionMetrics) : evidence.ground(job.projectId(), request.sourceSnapshotId(), draft.changes());
-            for (var proposal : draft.changes()) {
-                if (!allowed.contains(proposal.targetType())) throw Problem.invalid("生成结果包含未授权的资产类型");
-                if (proposal.targetType() != AssetType.PROJECT && !"ADD".equals(proposal.operation())) throw Problem.invalid("初次生成只能新增草稿，修改既有资产请使用反馈调优");
-                if (proposal.targetType() == AssetType.PROJECT && (!"MODIFY".equals(proposal.operation()) || !job.projectId().equals(proposal.targetId()))) throw Problem.invalid("项目生成仅能修改当前项目资料");
-                if (request.parentId() != null && proposal.targetType() == request.type() && !Objects.equals(request.parentId(), proposal.parentId())) throw Problem.invalid("生成资产超出指定父级");
-                if (proposal.data() != null && proposal.targetType().fields().stream().anyMatch(field -> field.kind().equals("password") && proposal.data().containsKey(field.key()))) throw Problem.invalid("AI 不能生成凭证字段");
-            }
             String modelStamp = stamp;
             return job.completeAtomically(() -> {
                 String changeId = changes.create(job.projectId(), conversation, job.id(), proposals);

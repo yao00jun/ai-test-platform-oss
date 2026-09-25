@@ -52,13 +52,23 @@ public final class GlobalFeedbackService implements JobHandler {
             if (!bound.isBlank()) source = bound;
         }
         Map<String, Object> executionMetrics = metrics.capture(job.projectId(), null);
-        Map<String, Object> context = Map.of("feedback", request.feedback(), "manifest", manifest, "project", assets.get(job.projectId(), job.projectId()), "history", conversations.messages(job.projectId(), request.conversationId()), "schemas", drafts.schemas(EnumSet.allOf(AssetType.class)), "executionMetrics", executionMetrics, "sourceEvidence", evidence.contexts(job.projectId(), manifest, source));
+        Map<String, Object> context = Map.of("feedback", request.feedback(), "manifest", ModelContextBudget.assets(manifest, 150_000, json), "project", assets.get(job.projectId(), job.projectId()), "history", ModelContextBudget.history(conversations.messages(job.projectId(), request.conversationId())), "schemas", drafts.schemas(EnumSet.allOf(AssetType.class)), "executionMetrics", executionMetrics, "sourceEvidence", evidence.contexts(job.projectId(), manifest, source));
         conversations.recordUser(request.conversationId(), job.id(), request.feedback(), null, context);
         String raw = "", stamp = "unconfigured";
         try {
             ModelSettings model = settings.current(); stamp = model.modelName() + ":" + model.version();
             job.progress(10, "正在比较当前资产、人工修改和多轮反馈");
-            AiDraftEngine.Draft draft = drafts.generate(model, job, "pipeline_feedback", context, null, null); raw = draft.raw();
+            AiDraftEngine.Draft draft = drafts.generate(model, job, "pipeline_feedback", context, null, null, "", true, proposed -> {
+                for (var proposal : proposed) if (!"ADD".equals(proposal.operation()) && !targets.containsKey(proposal.targetId()))
+                    throw Problem.invalid("「" + proposal.name() + "」不在本轮反馈的资产范围内，MODIFY/DELETE 只能针对 manifest 中的资产");
+                return changes.preflight(job.projectId(), proposed);
+            }); raw = draft.raw();
+            if (draft.changes().isEmpty()) {
+                String reason = "本轮反馈无需修改已有资产";
+                try { reason = Values.text(json.map(draft.raw().strip()), "reason", reason); } catch (RuntimeException unreadable) { /* Keep the generic sentence. */ }
+                conversations.recordAssistant(request.conversationId(), job.id(), draft.raw(), "NO_CHANGES", null, null, List.of(), Map.of("valid", true), stamp, prompts.version("pipeline_feedback"));
+                return Map.of("status", "NO_CHANGES", "message", reason);
+            }
             List<AiChangeSetService.Proposal> proposals = evidence.groundGlobal(job.projectId(), source, manifest, metrics.ground(draft.changes(), executionMetrics));
             for (var proposal : draft.changes()) if (!proposal.operation().equals("ADD")) {
                 Asset target = targets.get(proposal.targetId());

@@ -58,7 +58,7 @@ public class AiRefinementService implements JobHandler {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("target", assets.get(job.projectId(), current.id()));
         context.put("allowedFields", allowed);
-        context.put("history", history.stream().skip(Math.max(0, history.size() - 24)).toList());
+        context.put("history", ModelContextBudget.history(history));
         context.put("feedback", request.feedback());
         context.put("sourceEvidence", evidence.contexts(job.projectId(), List.of(current), null));
         if (current.type() == AssetType.DASHBOARD) context.put("cardSchema", com.aitest.workbench.DashboardCardSchema.contract());
@@ -70,7 +70,7 @@ public class AiRefinementService implements JobHandler {
             ModelSettings model = settings.current();
             modelVersion = model.modelName() + ":" + model.version();
             job.progress(10, "正在根据当前资产和历史反馈生成单项修改");
-            raw = gateway.complete(model, job, "local_refinement", "INITIAL", prompts.load("local_refinement"), json.write(context), token -> job.event("token", Map.of("token", token, "content", token)));
+            raw = gateway.complete(model, job, "local_refinement", "INITIAL", prompts.load("local_refinement"), json.write(context), token -> job.event("token", Map.of("token", token)));
             candidate = parseCandidate(raw, allowed);
             Map<String, Object> proposal = castMap(candidate);
             String name = proposal.get("name") instanceof String s ? s : null;

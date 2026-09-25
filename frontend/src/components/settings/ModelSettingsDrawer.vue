@@ -8,7 +8,7 @@ import ErrorNotice from '../common/ErrorNotice.vue'
 import ModelPricingEditor from './ModelPricingEditor.vue'
 
 const visible = defineModel<boolean>('visible', { default: false })
-const form = reactive({ baseUrl: '', apiKey: '', modelName: '', trustSelfSigned: false })
+const form = reactive({ baseUrl: '', apiKey: '', modelName: '', trustSelfSigned: false, timeoutSeconds: 600, temperature: 0.3, requestsPerMinute: 0 })
 const isHttps = computed(() => form.baseUrl.trim().toLowerCase().startsWith('https://'))
 const hasApiKey = ref(false)
 const loading = ref(false)
@@ -38,6 +38,9 @@ watch(visible, async (open) => {
     form.baseUrl = result.baseUrl
     form.modelName = result.modelName
     form.trustSelfSigned = result.trustSelfSigned
+    form.timeoutSeconds = result.timeoutSeconds
+    form.temperature = result.temperature
+    form.requestsPerMinute = result.requestsPerMinute
     form.apiKey = ''
     hasApiKey.value = result.hasApiKey
   } catch (failure) { if (scope.isCurrent(token)) error.value = failure }
@@ -67,13 +70,16 @@ async function save(test = false) {
   try { const url = new URL(form.baseUrl.trim()); if (!['https:', 'http:'].includes(url.protocol)) throw new Error() } catch { errors.value.baseUrl = '请输入有效的 HTTP 或 HTTPS 地址' }
   if (!form.modelName.trim()) errors.value.modelName = '请填写模型名称'
   if (!hasApiKey.value && !form.apiKey.trim()) errors.value.apiKey = '请填写 API Key'
+  if (!Number.isInteger(form.timeoutSeconds) || form.timeoutSeconds < 5 || form.timeoutSeconds > 3600) errors.value.timeoutSeconds = '请填写 5–3600 之间的整数秒数'
+  if (typeof form.temperature !== 'number' || Number.isNaN(form.temperature) || form.temperature < 0 || form.temperature > 2) errors.value.temperature = '请填写 0–2 之间的数值'
+  if (!Number.isInteger(form.requestsPerMinute) || form.requestsPerMinute < 0 || form.requestsPerMinute > 10000) errors.value.requestsPerMinute = '请填写 0–10000 之间的整数，0 表示不限制'
   if (Object.keys(errors.value).length) return
   const token = scope.begin('settings-save')
   busy.value = true
   error.value = undefined
   testResult.value = undefined
   try {
-    const settings = await aiApi.saveSettings({ baseUrl: form.baseUrl.trim(), modelName: form.modelName.trim(), trustSelfSigned: form.trustSelfSigned, ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}) })
+    const settings = await aiApi.saveSettings({ baseUrl: form.baseUrl.trim(), modelName: form.modelName.trim(), trustSelfSigned: form.trustSelfSigned, timeoutSeconds: form.timeoutSeconds, temperature: form.temperature, requestsPerMinute: form.requestsPerMinute, ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}) })
     if (!scope.isCurrent(token)) return
     form.apiKey = ''
     hasApiKey.value = settings.hasApiKey
@@ -102,6 +108,15 @@ onUnmounted(() => scope.invalidate())
             <a-auto-complete v-model="form.modelName" :data="models" :input-attrs="{ id: 'model-name', 'aria-label': '模型名称' }" placeholder="服务商提供的完整模型名称" allow-clear />
             <a-button :loading="modelsLoading" :disabled="busy || loading" aria-label="获取模型列表" title="从服务商获取模型列表" @click="fetchModels"><template #icon><IconRefresh /></template>获取</a-button>
           </div>
+        </a-form-item>
+        <a-form-item field="timeoutSeconds" label="单次调用超时（秒）" label-component="label" :label-attrs="{ for: 'model-timeout' }" :validate-status="errors.timeoutSeconds ? 'error' : undefined" :help="errors.timeoutSeconds || '一次模型调用从发出到全部返回的最长时间，默认 600。生成内容多、模型较慢（如推理模型）时调大；流水线提示“超过 N 秒上限”时改这里。'">
+          <a-input-number v-model="form.timeoutSeconds" :min="5" :max="3600" :step="60" :precision="0" :input-attrs="{ id: 'model-timeout', 'aria-label': '单次调用超时（秒）' }" />
+        </a-form-item>
+        <a-form-item field="requestsPerMinute" label="每分钟最多请求数" label-component="label" :label-attrs="{ for: 'model-rpm' }" :validate-status="errors.requestsPerMinute ? 'error' : undefined" :help="errors.requestsPerMinute || '服务商限制每分钟请求数（RPM）时填写，例如 5；平台所有 AI 功能共用这个名额并自动排队，不会因此报限流错误。0 表示不限制。'">
+          <a-input-number v-model="form.requestsPerMinute" :min="0" :max="10000" :step="1" :precision="0" :input-attrs="{ id: 'model-rpm', 'aria-label': '每分钟最多请求数' }" />
+        </a-form-item>
+        <a-form-item field="temperature" label="温度" label-component="label" :label-attrs="{ for: 'model-temperature' }" :validate-status="errors.temperature ? 'error' : undefined" :help="errors.temperature || '0–2，越低输出越稳定。生成测试资产建议 0.1–0.3，默认 0.3。'">
+          <a-input-number v-model="form.temperature" :min="0" :max="2" :step="0.1" :precision="2" :input-attrs="{ id: 'model-temperature', 'aria-label': '温度' }" />
         </a-form-item>
       </a-form>
     </a-spin>

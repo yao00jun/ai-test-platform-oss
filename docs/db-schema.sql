@@ -343,7 +343,8 @@ CREATE TABLE ai_model_config (
   api_key TEXT NOT NULL,
   model_name VARCHAR(200) NOT NULL,
   temperature DECIMAL(4,2) NOT NULL DEFAULT 0.3,
-  timeout_seconds INT NOT NULL DEFAULT 120,
+  timeout_seconds INT NOT NULL DEFAULT 600,
+  requests_per_minute INT NOT NULL DEFAULT 0,
   version BIGINT NOT NULL DEFAULT 1,
   updated_at DATETIME(3) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -1098,3 +1099,7 @@ CREATE INDEX ix_asset_scope_position ON asset(project_id,asset_type,parent_id,de
 
 -- V27__change_item_local_parent_reference.sql
 -- ai_change_item.parent_id widened to VARCHAR(160): "@localKey" references (localKey ≤ 128) did not fit the 32-char ID column.
+
+-- V28__model_call_limits.sql
+-- ai_model_config adds requests_per_minute (0 = no process-level cap) and changes the timeout default to 600 seconds.
+-- Existing rows written with the old implicit 120-second default are raised to 600; explicitly configured values remain unchanged.

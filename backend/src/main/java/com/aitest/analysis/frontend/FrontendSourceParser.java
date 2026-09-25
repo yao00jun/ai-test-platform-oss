@@ -134,7 +134,8 @@ public final class FrontendSourceParser {
             String normalized = key.replaceFirst("^(?::|v-bind:)", "");
             boolean dynamic = !normalized.equals(key) || value == null || value.contains("{{") || value.contains("${");
             if (TARGETS.contains(normalized) && dynamic) {
-                diagnostics.add(new SourceDiagnostic("WARNING", "DYNAMIC_SELECTOR", "FRONTEND", path, line, "属性 " + normalized + " 来自动态表达式，未猜测为定位器")); continue;
+                // A bound attribute is simply not used as a locator; that is expected in Vue/React and not an analysis gap.
+                diagnostics.add(new SourceDiagnostic("INFO", "DYNAMIC_SELECTOR", "FRONTEND", path, line, "属性 " + normalized + " 来自动态表达式，未猜测为定位器")); continue;
             }
             if (value != null) result.put(key, value.replace("&quot;", "\"").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"));
         }

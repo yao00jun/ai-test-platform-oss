@@ -2,7 +2,9 @@ package com.aitest;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 @SpringBootApplication
 @EnableScheduling
@@ -25,5 +27,15 @@ public class AiTestApplication {
             return;
         }
         SpringApplication.run(AiTestApplication.class, args);
+    }
+
+    /**
+     * Boot's default scheduler runs every fixed-delay task on a single thread, so one sweep waiting on a row lock could
+     * delay job-lease renewal long enough for healthy jobs to be taken over as interrupted. A small pool keeps them apart.
+     */
+    @Bean ThreadPoolTaskScheduler taskScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(8); scheduler.setThreadNamePrefix("aitest-schedule-"); scheduler.setRemoveOnCancelPolicy(true);
+        return scheduler;
     }
 }

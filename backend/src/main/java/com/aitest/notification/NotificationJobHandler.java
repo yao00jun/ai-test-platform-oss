@@ -4,6 +4,7 @@ import com.aitest.engine.http.HttpTransport;
 import com.aitest.execution.*;
 import com.aitest.job.*;
 import org.springframework.stereotype.Component;
+import javax.net.ssl.SSLException;
 import java.net.*;
 import java.net.http.HttpConnectTimeoutException;
 import java.time.Instant;
@@ -24,14 +25,17 @@ public final class NotificationJobHandler implements JobHandler {
         try {
             var request = protocol.request(send.config(), send.report(), Instant.now());
             int timeout = Values.integer(send.config(), "timeoutSeconds", 10, 1, 60) * 1000;
+            int connectTimeout = Math.max(100, Math.min(5000, timeout / 3));
             var response = transport.exchange("POST", request.url(), Map.of("Content-Type", "application/json; charset=utf-8", "X-AITest-Delivery-Id", delivery), request.body(), timeout,
-                    Map.of("connectTimeoutMs", timeout, "maxResponseBytes", 16384, "followRedirects", false, "trustSelfSigned", false), new ExecutionContext(Map.of(), job::checkpoint));
+                    Map.of("connectTimeoutMs", connectTimeout, "maxResponseBytes", 16384, "followRedirects", false, "trustSelfSigned", false), new ExecutionContext(Map.of(), job::checkpoint));
             result = protocol.response(Values.text(send.config(), "platform", "DINGTALK"), ((Number) response.get("status")).intValue(), response.get("body").toString());
         } catch (Exception failure) {
             // Once send may have started, only definite pre-connection failures are safe
             // to replay. Never persist exception messages containing signed URLs.
-            boolean notConnected = causedBy(failure, ConnectException.class) || causedBy(failure, UnknownHostException.class) || causedBy(failure, HttpConnectTimeoutException.class);
-            result = new WebhookProtocol.Result(notConnected ? "REJECTED" : "UNCERTAIN", notConnected, notConnected ? "CONNECT_FAILED" : "DELIVERY_NOT_CONFIRMED", null);
+            boolean tlsFailure = causedBy(failure, SSLException.class);
+            boolean notConnected = tlsFailure || causedBy(failure, ConnectException.class) || causedBy(failure, UnknownHostException.class) || causedBy(failure, HttpConnectTimeoutException.class);
+            String code = tlsFailure ? "TLS_FAILED" : notConnected ? "CONNECT_FAILED" : "DELIVERY_NOT_CONFIRMED";
+            result = new WebhookProtocol.Result(notConnected ? "REJECTED" : "UNCERTAIN", notConnected && !tlsFailure, code, null);
         }
         boolean interrupted = Thread.interrupted();
         try { notifications.completed(job, delivery, attempt, result); }

@@ -14,6 +14,7 @@ AI-Test-Platform 唯一的 Windows 脚本。日常不用直接运行它：双击
     backup             一致备份到 instance\backups（-DestinationDirectory 指定目录，-LeaveStopped 备份后不重启）
     restore            把备份恢复到一个新的空实例：restore -BackupDirectory <备份目录> -InstanceDirectory <新实例目录>
     install-browsers   安装 Playwright 浏览器内核（-Browsers chromium,firefox,webkit；-DryRun 只预览）
+    upgrade             从当前新发行包就地升级旧安装目录（-Target <旧目录>；-Yes 跳过确认）
     start / stop       只启停后端进程，不碰 MySQL（up/down 内部调用）
 
   开发与发布（只在源码目录可用）
@@ -802,7 +803,11 @@ function Invoke-Start {
         }
         if (-not $ready) { throw "启动超时（$StartupTimeoutSeconds 秒）。请查看日志：$stdout" }
         $keyBytes = Get-AiTestMasterKey $settings
-        $state.masterKeyHash = Get-AiTestKeyHash $keyBytes
+        $keyHash = Get-AiTestKeyHash $keyBytes
+        if ($previous -and $previous.masterKeyHash -and $previous.masterKeyHash -ne $keyHash) {
+            throw '当前主密钥与上次运行的实例不一致。请从备份恢复 .master-key，或设置与原密钥一致的 AI_TEST_MASTER_KEY；没有覆盖旧的密钥指纹。'
+        }
+        if (-not $state.masterKeyHash) { $state.masterKeyHash = $keyHash }
         [Array]::Clear($keyBytes)
         $state.status='RUNNING'
         [IO.File]::WriteAllText($stateFile, ($state | ConvertTo-Json), $Script:Utf8)
@@ -991,6 +996,108 @@ function Invoke-Backup {
         [Array]::Clear($key)
         if ($wasRunning -and -not $LeaveStopped) { Invoke-Start -InstanceDirectory $settings.Instance -ConfigPath $settings.ConfigPath -JarPath $state.jar }
     }
+}
+
+function Get-AiTestReleaseVersion([string]$PackageRoot) {
+    $releaseFile = Join-Path $PackageRoot 'release.json'
+    if (-not (Test-Path -LiteralPath $releaseFile -PathType Leaf)) { return '未知版本' }
+    try {
+        $release = Get-Content -Raw -LiteralPath $releaseFile | ConvertFrom-Json
+        if ($release.version) { return [string]$release.version }
+    } catch { }
+    return '未知版本'
+}
+
+function Invoke-AiTestPackageScript([string]$PackageRoot, [string[]]$Arguments) {
+    $script = Join-Path $PackageRoot 'scripts/aitest.ps1'
+    if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { throw "找不到旧安装目录的脚本：$script" }
+    $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+    if (-not $pwsh) { $pwsh = Join-Path $PSHOME 'pwsh.exe' }
+    & $pwsh -NoProfile -ExecutionPolicy Bypass -File $script @Arguments | ForEach-Object { Write-Output $_ }
+    if ($LASTEXITCODE -ne 0) { throw "旧安装目录的命令失败（退出码 $LASTEXITCODE）：$($Arguments[0])" }
+}
+
+function Copy-AiTestMissingTree([string]$Source, [string]$Destination) {
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) { return }
+    $null = New-Item -ItemType Directory -Path $Destination -Force
+    foreach ($entry in Get-ChildItem -LiteralPath $Source -Force) {
+        $target = Join-Path $Destination $entry.Name
+        if ($entry.PSIsContainer) {
+            Copy-AiTestMissingTree -Source $entry.FullName -Destination $target
+        } elseif (-not (Test-Path -LiteralPath $target)) {
+            Copy-Item -LiteralPath $entry.FullName -Destination $target -Force
+        }
+    }
+}
+
+function Invoke-Upgrade {
+    param([Parameter(Mandatory)][string]$Target, [switch]$Yes)
+    if ($Script:IsSourceTree -and -not (Test-Path -LiteralPath $Script:ReleaseJar -PathType Leaf)) {
+        throw 'upgrade 必须从包含 app.jar 的新发行包运行，不能直接从源码目录升级。'
+    }
+    $targetRoot = [IO.Path]::GetFullPath($Target)
+    $currentRoot = [IO.Path]::GetFullPath($Script:ProjectRoot)
+    if (-not (Test-Path -LiteralPath $targetRoot -PathType Container)) { throw "旧安装目录不存在：$targetRoot" }
+    if ($targetRoot.TrimEnd('\','/') -eq $currentRoot.TrimEnd('\','/')) { throw '旧安装目录不能是当前新发行包目录。' }
+    foreach ($required in @('app.jar', 'scripts/aitest.ps1', 'instance')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $targetRoot $required))) { throw "旧安装目录缺少 $required，不能升级。" }
+    }
+    $oldVersion = Get-AiTestReleaseVersion $targetRoot
+    $newVersion = Get-AiTestReleaseVersion $currentRoot
+    Write-Output "旧版本：$oldVersion"
+    Write-Output "新版本：$newVersion"
+    if (-not $Yes) {
+        $answer = Read-Host '升级会先备份并停止旧实例，然后修改旧文件夹。确认继续请输入 YES'
+        if ($answer -cne 'YES') { throw '已取消升级，没有修改旧安装目录。' }
+    }
+
+    Write-Step '1/6 备份旧实例'
+    Invoke-AiTestPackageScript -PackageRoot $targetRoot -Arguments @('backup', '-InstanceDirectory', $targetRoot, '-LeaveStopped')
+    Write-Ok '逻辑备份完成。'
+    Write-Step '2/6 停止旧实例和数据库'
+    Invoke-AiTestPackageScript -PackageRoot $targetRoot -Arguments @('down', '-InstanceDirectory', $targetRoot)
+    Write-Ok '旧实例已停止。'
+
+    $parent = Split-Path -Parent $targetRoot
+    $leaf = Split-Path -Leaf $targetRoot
+    $rollback = Join-Path $parent ($leaf + '-升级前-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
+    if (Test-Path -LiteralPath $rollback) { $rollback += '-' + [guid]::NewGuid().ToString('N').Substring(0, 8) }
+    Write-Step '3/6 创建升级前回退副本'
+    Copy-Item -LiteralPath $targetRoot -Destination $rollback -Recurse -Force
+    Write-Ok "回退副本：$rollback"
+    if (-not (Test-Path -LiteralPath (Join-Path $targetRoot '.runtime/mysql/data') -PathType Container)) {
+        Write-Warn '旧实例的 MySQL 数据目录不在安装文件夹内，升级前副本不包含数据库；逻辑备份仍然已保存。'
+    }
+
+    Write-Step '4/6 替换程序文件'
+    foreach ($directory in @('scripts', 'docs', 'database', 'licenses')) {
+        $source = Join-Path $currentRoot $directory
+        if (-not (Test-Path -LiteralPath $source -PathType Container)) { continue }
+        $destination = Join-Path $targetRoot $directory
+        if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
+        Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+    }
+    foreach ($name in @('app.jar', 'README.md', 'NOTICE.md', 'release.json', 'SHA256SUMS', 'config.example.json', 'source.zip')) {
+        $source = Join-Path $currentRoot $name
+        if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-Item -LiteralPath $source -Destination (Join-Path $targetRoot $name) -Force }
+    }
+    foreach ($cmd in Get-ChildItem -LiteralPath $currentRoot -Filter '*.cmd' -File) { Copy-Item -LiteralPath $cmd.FullName -Destination (Join-Path $targetRoot $cmd.Name) -Force }
+    Copy-AiTestMissingTree -Source (Join-Path $currentRoot '.tools') -Destination (Join-Path $targetRoot '.tools')
+    Write-Ok '已保留 instance、data、.runtime，并补齐未覆盖的 .tools 子目录。'
+
+    Write-Step '5/6 启动新版本'
+    Invoke-AiTestPackageScript -PackageRoot $targetRoot -Arguments @('up', '-InstanceDirectory', $targetRoot, '-NoBrowser')
+    $settings = Read-AiTestConfiguration -InstanceDirectory $targetRoot
+    $backend = Get-BackendState $settings
+    if (-not $backend.Process -or -not $backend.Healthy) {
+        $logTail = @()
+        if ($backend.State.stdout -and (Test-Path -LiteralPath $backend.State.stdout)) { $logTail += Get-Content -LiteralPath $backend.State.stdout -Tail 30 }
+        if ($backend.State.stderr -and (Test-Path -LiteralPath $backend.State.stderr)) { $logTail += Get-Content -LiteralPath $backend.State.stderr -Tail 30 }
+        throw "升级后健康检查未通过。请查看 $($backend.State.stdout)；日志末尾：`n$($logTail -join "`n")"
+    }
+    Write-Step '6/6 完成'
+    Write-Output "升级完成：$targetRoot（$newVersion）"
+    Write-Output "如需回退：停止实例，把旧目录改名，再把 $rollback 改回 $leaf。"
 }
 
 function Invoke-Restore {
@@ -1414,9 +1521,9 @@ function Invoke-Build {
     if (Test-Path -LiteralPath $docsRoot -PathType Container) {
         $releaseDocs = Join-Path $releaseRoot 'docs'
         $null = New-Item -ItemType Directory -Path $releaseDocs
-        $internalDocs = @('roadmap.md','codex-implementation-prompt.md','session-handoff-2026-09-18.md')
+        $internalDocs = @('roadmap.md','codex-implementation-prompt.md')
         foreach ($file in Get-ChildItem -LiteralPath $docsRoot -File) {
-            if ($file.Extension -in @('.md','.sql') -and $internalDocs -notcontains $file.Name) { [IO.File]::Copy($file.FullName, (Join-Path $releaseDocs $file.Name), $false) }
+            if ($file.Extension -in @('.md','.sql') -and $internalDocs -notcontains $file.Name -and $file.Name -notlike 'session-handoff-*.md') { [IO.File]::Copy($file.FullName, (Join-Path $releaseDocs $file.Name), $false) }
         }
         if (Test-Path -LiteralPath (Join-Path $docsRoot 'prompts')) { Copy-Item -LiteralPath (Join-Path $docsRoot 'prompts') -Destination (Join-Path $releaseDocs 'prompts') -Recurse }
     }
@@ -1555,6 +1662,7 @@ switch ($command.ToLowerInvariant()) {
     'start'            { Invoke-Start @rest }
     'stop'             { Invoke-Stop @rest }
     'backup'           { Invoke-Backup @rest }
+    'upgrade'          { Invoke-Upgrade @rest }
     'restore'          { Invoke-Restore @rest }
     'install-browsers' { Invoke-InstallBrowsers @rest }
     'build'            { Invoke-Build @rest }

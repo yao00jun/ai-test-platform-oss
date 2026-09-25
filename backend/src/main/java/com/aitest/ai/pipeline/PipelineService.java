@@ -174,19 +174,33 @@ public class PipelineService implements JobHandler {
             boolean continuation = !reconciled.pending().isEmpty();
             if (continuation && !Values.bool(Values.map(input.get("resumeRequest")), "execute", false))
                 return executionGap(job, id, output, "PENDING_NEW_ASSETS", "新生成资产已纳入计划，但不在已有运行快照内；请显式重试 S6 并选择执行，以单独运行待执行项");
+            // Generated cases include POST/PUT/DELETE requests; against production they only run after a person reviews them.
+            if (Values.bool(config, "execute", false) && "PRODUCTION".equals(Values.text(assets.get(job.projectId(), environment).data(), "purpose", ""))) {
+                output.put("execution", "NOT_REQUESTED"); output.put("requiresExecutionResume", false);
+                output.put("reason", "所选环境是生产环境，AI 生成的测试不会自动执行（其中可能有新增、修改、删除类请求）；测试计划已生成，请检查用例后在测试计划中手动发起执行");
+                complete(job, id, "S6", "COMPLETED", output, null);
+                return Map.of("pipelineId", id, "stage", "S6", "output", output);
+            }
+            if (runId.isBlank() || continuation) {
+                var checked = dependencies.validate(job.projectId(), planId, environment, null);
+                if (!Boolean.TRUE.equals(checked.get("valid"))) {
+                    output.put("validation", checked);
+                    String reason = Values.objects(checked.get("errors")).stream().map(error -> Values.text(error, "message", "执行条件未满足")).distinct().limit(3).collect(java.util.stream.Collectors.joining("；"));
+                    if (!Values.bool(config, "execute", false)) {
+                        output.put("execution", "NOT_REQUESTED"); output.put("requiresExecutionResume", false); output.put("reason", reason);
+                        complete(job, id, "S6", "BLOCKED", output, reason);
+                        return Map.of("pipelineId", id, "stage", "S6", "status", "BLOCKED", "output", output);
+                    }
+                    return executionGap(job, id, output, "DEPENDENCY_UPDATE_REQUIRED", reason + "。生成资产已保留，补充后可重试执行阶段");
+                }
+                output.remove("validation");
+            }
             if (!Values.bool(config, "execute", false)) {
                 output.put("execution", "NOT_REQUESTED"); output.put("requiresExecutionResume", false); output.remove("reason"); complete(job, id, "S6", "COMPLETED", output, null);
                 return Map.of("pipelineId", id, "stage", "S6", "output", output);
             }
             String runJob;
             if (runId.isBlank() || continuation) {
-                var checked = dependencies.validate(job.projectId(), planId, environment, null);
-                if (!Boolean.TRUE.equals(checked.get("valid"))) {
-                    output.put("validation", checked);
-                    String reason = Values.objects(checked.get("errors")).stream().map(error -> Values.text(error, "message", "执行条件未满足")).distinct().limit(3).collect(java.util.stream.Collectors.joining("；"));
-                    return executionGap(job, id, output, "DEPENDENCY_UPDATE_REQUIRED", reason + "。生成资产已保留，补充后可重试执行阶段");
-                }
-                output.remove("validation");
                 String executionPlan = planId;
                 if (continuation) {
                     var next = plans.continuation(job.projectId(), reconciled); executionPlan = next.planId();
@@ -243,11 +257,18 @@ public class PipelineService implements JobHandler {
                 if (!job.id().equals(pipeline.get("jobId")) || pipeline.get("status").equals("CANCELLED")) return;
                 String status = failure instanceof java.util.concurrent.CancellationException ? "CANCELLED" : failure instanceof JobService.LeaseLostException ? "INTERRUPTED" : "FAILED";
                 String message = failure instanceof Problem ? failure.getMessage() : "阶段执行已停止（" + failure.getClass().getSimpleName() + "）";
-                repository.jdbc().update("UPDATE ai_pipeline_record SET status=?,error=?,revision=revision+1,updated_at=? WHERE id=?", status, message, now(), id);
-                repository.jdbc().update("UPDATE ai_pipeline_step SET status=?,error=?,completed_at=? WHERE pipeline_id=? AND job_id=?", status, message, now(), id, job.id());
-                repository.jdbc().update("UPDATE ai_message SET status='FAILED',validation=? WHERE job_id=? AND role='assistant' AND status='PREVIEW'", json.write(Map.of("message", message)), job.id());
+                Map<String, Object> error = errorDetails(failure);
+                String encoded = json.write(error);
+                repository.jdbc().update("UPDATE ai_pipeline_record SET status=?,error=?,revision=revision+1,updated_at=? WHERE id=?", status, encoded, now(), id);
+                repository.jdbc().update("UPDATE ai_pipeline_step SET status=?,error=?,completed_at=? WHERE pipeline_id=? AND job_id=?", status, encoded, now(), id, job.id());
+                repository.jdbc().update("UPDATE ai_message SET status='FAILED',validation=? WHERE job_id=? AND role='assistant' AND status='PREVIEW'", encoded, job.id());
             });
         } finally { if (interrupted) Thread.currentThread().interrupt(); }
+    }
+    private Map<String, Object> errorDetails(RuntimeException failure) {
+        String message = failure instanceof Problem ? failure.getMessage() : "阶段执行已停止（" + failure.getClass().getSimpleName() + "）";
+        if (failure instanceof Problem problem) return Map.of("code", problem.code(), "message", Objects.toString(message, "阶段执行失败"), "details", problem.details() == null ? Map.of() : problem.details());
+        return Map.of("code", "INTERNAL_ERROR", "message", message, "details", Map.of());
     }
     @Scheduled(fixedDelay = 500, initialDelay = 1500)
     public void reconcile() {
@@ -282,7 +303,7 @@ public class PipelineService implements JobHandler {
         }
         if (state.equals("WAITING_DIAGNOSIS") && active.status().equals("SUCCEEDED")) {
             output.put("diagnosis", active.result());
-            List<String> bugIds = Values.objects(active.result().get("items")).stream().filter(item -> !"SUPPRESSED_DELETED".equals(item.get("status"))).map(item -> item.get("bugId").toString()).distinct().toList(); appendAssets(id, pipeline, bugIds);
+            List<String> bugIds = Values.objects(active.result().get("items")).stream().filter(item -> !"SUPPRESSED_DELETED".equals(item.get("status"))).map(item -> Values.text(item, "bugId", "")).filter(value -> !value.isBlank()).distinct().toList(); appendAssets(id, pipeline, bugIds);
             finishExecution(project, id, step, output); return;
         }
         if (!active.status().equals("SUCCEEDED")) {

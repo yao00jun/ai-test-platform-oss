@@ -33,10 +33,10 @@ public class ModelSettingsService {
         var rows = jdbc.queryForList("SELECT * FROM ai_model_config WHERE id='company-default'");
         if (!rows.isEmpty()) {
             var row = rows.getFirst();
-            return new ModelSettings(row.get("base_url").toString(), secrets.decrypt(row.get("api_key").toString()), row.get("model_name").toString(), ((Number) row.get("temperature")).doubleValue(), ((Number) row.get("timeout_seconds")).intValue(), row.get("version").toString(), Boolean.TRUE.equals(row.get("trust_self_signed")) || Integer.valueOf(1).equals(row.get("trust_self_signed")));
+            return new ModelSettings(row.get("base_url").toString(), secrets.decrypt(row.get("api_key").toString()), row.get("model_name").toString(), ((Number) row.get("temperature")).doubleValue(), ((Number) row.get("timeout_seconds")).intValue(), row.get("version").toString(), Boolean.TRUE.equals(row.get("trust_self_signed")) || Integer.valueOf(1).equals(row.get("trust_self_signed")), ((Number) row.get("requests_per_minute")).intValue());
         }
         if (fileBaseUrl.isBlank() || fileKey.isBlank() || fileModel.isBlank()) return null;
-        return new ModelSettings(ModelSettings.normalizeBaseUrl(fileBaseUrl), fileKey, fileModel, 0.3, 120, "file");
+        return new ModelSettings(ModelSettings.normalizeBaseUrl(fileBaseUrl), fileKey, fileModel, ModelSettings.DEFAULT_TEMPERATURE, ModelSettings.DEFAULT_TIMEOUT_SECONDS, "file");
     }
     public Map<String, Object> view() {
         ModelSettings current = optional();
@@ -44,8 +44,9 @@ public class ModelSettingsService {
         result.put("baseUrl", current == null ? fileBaseUrl : current.baseUrl());
         result.put("modelName", current == null ? fileModel : current.modelName());
         result.put("hasApiKey", current != null && !current.apiKey().isBlank());
-        result.put("temperature", current == null ? 0.3 : current.temperature());
-        result.put("timeoutSeconds", current == null ? 120 : current.timeoutSeconds());
+        result.put("temperature", current == null ? ModelSettings.DEFAULT_TEMPERATURE : current.temperature());
+        result.put("timeoutSeconds", current == null ? ModelSettings.DEFAULT_TIMEOUT_SECONDS : current.timeoutSeconds());
+        result.put("requestsPerMinute", current == null ? 0 : current.requestsPerMinute());
         result.put("trustSelfSigned", current != null && current.trustSelfSigned());
         return result;
     }
@@ -61,7 +62,7 @@ public class ModelSettingsService {
         if (key.isBlank()) throw Problem.invalid("请先填写 API Key 再获取模型列表");
         ModelSettings previous = optional();
         boolean trust = request.trustSelfSigned() != null ? request.trustSelfSigned() : previous != null && previous.trustSelfSigned();
-        return gateway.listModels(request.baseUrl(), key, previous == null ? 30 : Math.min(previous.timeoutSeconds(), 60), trust);
+        return gateway.listModels(request.baseUrl(), key, previous == null ? 30 : Math.min(previous.timeoutSeconds(), 60), trust, previous == null ? 0 : previous.requestsPerMinute());
     }
     @Transactional
     public Map<String, Object> save(Input input) {
@@ -69,15 +70,21 @@ public class ModelSettingsService {
         String key = resolveApiKey(input.apiKey());
         if (key.isBlank() || input.modelName() == null || input.modelName().isBlank()) throw Problem.invalid("模型名称和 API Key 必填");
         String baseUrl = ModelSettings.normalizeBaseUrl(input.baseUrl());
-        double temperature = input.temperature() == null ? 0.3 : input.temperature();
-        int timeout = input.timeoutSeconds() == null ? 120 : input.timeoutSeconds();
+        // Omitted fields keep the saved value, so a client that only edits the address or key never resets the rest.
+        double temperature = input.temperature() != null ? input.temperature() : previous != null ? previous.temperature() : ModelSettings.DEFAULT_TEMPERATURE;
+        int timeout = input.timeoutSeconds() != null ? input.timeoutSeconds() : previous != null ? previous.timeoutSeconds() : ModelSettings.DEFAULT_TIMEOUT_SECONDS;
+        int perMinute = input.requestsPerMinute() != null ? input.requestsPerMinute() : previous != null ? previous.requestsPerMinute() : 0;
         boolean trust = input.trustSelfSigned() != null ? input.trustSelfSigned() : previous != null && previous.trustSelfSigned();
-        if (temperature < 0 || temperature > 2 || timeout < 5 || timeout > 600 || input.modelName().length() > 200 || key.length() > 16000) throw Problem.invalid("模型配置参数范围无效");
-        jdbc.update("INSERT INTO ai_model_config(id,base_url,api_key,model_name,temperature,timeout_seconds,trust_self_signed,updated_at) VALUES('company-default',?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE base_url=VALUES(base_url),api_key=VALUES(api_key),model_name=VALUES(model_name),temperature=VALUES(temperature),timeout_seconds=VALUES(timeout_seconds),trust_self_signed=VALUES(trust_self_signed),version=version+1,updated_at=VALUES(updated_at)", baseUrl, secrets.encrypt(key), input.modelName().strip(), temperature, timeout, trust, Timestamp.from(Instant.now()));
+        if (input.modelName().length() > 200 || key.length() > 16000) throw Problem.invalid("模型名称或 API Key 过长");
+        if (!(temperature >= 0 && temperature <= 2)) throw Problem.invalid("温度需要在 0–2 之间");
+        if (timeout < ModelSettings.MIN_TIMEOUT_SECONDS || timeout > ModelSettings.MAX_TIMEOUT_SECONDS) throw Problem.invalid("单次调用超时需要 " + ModelSettings.MIN_TIMEOUT_SECONDS + "–" + ModelSettings.MAX_TIMEOUT_SECONDS + " 秒");
+        if (perMinute < 0 || perMinute > ModelSettings.MAX_REQUESTS_PER_MINUTE) throw Problem.invalid("每分钟最多请求数需要 0–" + ModelSettings.MAX_REQUESTS_PER_MINUTE + "，0 表示不限制");
+        jdbc.update("INSERT INTO ai_model_config(id,base_url,api_key,model_name,temperature,timeout_seconds,trust_self_signed,requests_per_minute,updated_at) VALUES('company-default',?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE base_url=VALUES(base_url),api_key=VALUES(api_key),model_name=VALUES(model_name),temperature=VALUES(temperature),timeout_seconds=VALUES(timeout_seconds),trust_self_signed=VALUES(trust_self_signed),requests_per_minute=VALUES(requests_per_minute),version=version+1,updated_at=VALUES(updated_at)", baseUrl, secrets.encrypt(key), input.modelName().strip(), temperature, timeout, trust, perMinute, Timestamp.from(Instant.now()));
         return view();
     }
-    public record Input(String baseUrl, String apiKey, String modelName, Double temperature, Integer timeoutSeconds, Boolean trustSelfSigned) {
-        public Input(String baseUrl, String apiKey, String modelName, Double temperature, Integer timeoutSeconds) { this(baseUrl, apiKey, modelName, temperature, timeoutSeconds, null); }
+    public record Input(String baseUrl, String apiKey, String modelName, Double temperature, Integer timeoutSeconds, Boolean trustSelfSigned, Integer requestsPerMinute) {
+        public Input(String baseUrl, String apiKey, String modelName, Double temperature, Integer timeoutSeconds) { this(baseUrl, apiKey, modelName, temperature, timeoutSeconds, null, null); }
+        public Input(String baseUrl, String apiKey, String modelName, Double temperature, Integer timeoutSeconds, Boolean trustSelfSigned) { this(baseUrl, apiKey, modelName, temperature, timeoutSeconds, trustSelfSigned, null); }
     }
     public record ModelListRequest(String baseUrl, String apiKey, Boolean trustSelfSigned) { }
 }

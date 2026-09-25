@@ -47,10 +47,14 @@ public final class BlastRadiusService {
         for (var statement : Values.objects(ast.get("mapperStatements"))) {
             List<String> methods = Values.objects(ast.get("methods")).stream().filter(m -> statement.get("namespace").equals(m.get("owner")) && statement.get("id").equals(m.get("name"))).map(GitDiffAnalyzer::nodeId).filter(callees::containsKey).toList();
             if (methods.isEmpty()) continue;
-            if (Boolean.TRUE.equals(statement.get("dynamic"))) { diagnostics.add(diagnostic(version, statement, "DYNAMIC_MAPPER_SQL", "动态 SQL 的表依赖可能不完整")); continue; }
+            String text = Values.text(statement, "sql", "");
+            // Rendered dynamic SQL parses like static SQL; only ${...} splicing leaves a table unknowable.
+            if (text.contains("${")) diagnostics.add(diagnostic(version, statement, "MAPPER_STRING_SUBSTITUTION", "语句用 ${...} 拼接 SQL，运行时决定的表可能未计入影响范围"));
+            if (statement.get("unresolvedIncludes") instanceof List<?> missing && !missing.isEmpty()) diagnostics.add(diagnostic(version, statement, "MAPPER_INCLUDE_UNRESOLVED", "语句引用的 SQL 片段未找到，表依赖可能不完整"));
             try {
-                var sql = CCJSqlParserUtil.parse(Values.text(statement, "sql", "").replaceAll("#\\{[^}]+}", "?"));
-                for (String table : new TablesNamesFinder<Void>().getTables(sql)) tables.add(Map.of("table", table, "sourceVersion", version, "sourcePath", statement.get("sourcePath"), "startLine", statement.get("startLine"), "methodNodes", methods, "basis", "MAPPER_SQL"));
+                var sql = CCJSqlParserUtil.parse(text.replaceAll("#\\{[^}]+}", "?").replaceAll("\\$\\{[^}]+}", "runtime_value"));
+                for (String table : new TablesNamesFinder<Void>().getTables(sql)) if (!table.equals("runtime_value"))
+                    tables.add(Map.of("table", table, "sourceVersion", version, "sourcePath", statement.get("sourcePath"), "startLine", statement.get("startLine"), "methodNodes", methods, "basis", "MAPPER_SQL"));
             } catch (Exception unsupported) { diagnostics.add(diagnostic(version, statement, "MAPPER_SQL_UNRESOLVED", "无法静态解析此 Mapper 语句的表依赖")); }
         }
         var unresolved = Values.objects(graph.get("unresolvedCalls"));

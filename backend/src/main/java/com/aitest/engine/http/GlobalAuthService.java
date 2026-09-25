@@ -53,17 +53,28 @@ public final class GlobalAuthService {
             context.checkpoint();
             if (entry.token != null && entry.expiresAt.isAfter(Instant.now()) && !entry.token.value().equals(rejectedToken)) return entry.token;
             Map<String, Object> spec = new LinkedHashMap<>();
-            spec.put("method", method); spec.put("path", login); spec.put("bodyType", "JSON"); spec.put("body", payload);
+            spec.put("method", method); spec.put("path", login);
+            // A GET login carries its parameters in the query string; a request body on GET is dropped by most servers.
+            if (method.equals("GET")) { spec.put("bodyType", "NONE"); spec.put("queryParams", payload instanceof Map<?, ?> ? payload : Map.of()); }
+            else { spec.put("bodyType", "JSON"); spec.put("body", payload); }
             StepResult result = http.execute(spec, Values.text(environment.data(), "baseUrl", ""), headers, Values.map(environment.data().get("httpOptions")), context);
-            if (!result.successful()) throw new Problem(502, "AUTH_FAILED", "登录请求失败，请查看环境和鉴权配置");
+            if (!result.successful()) {
+                Object status = result.actual().get("status"); String body = Objects.toString(result.actual().get("body"), "").replaceAll("\\s+", " ").strip();
+                String detail = status == null ? Objects.toString(result.error(), "未收到响应") : "HTTP " + status + (body.isEmpty() ? "" : "，响应：" + (body.length() > 200 ? body.substring(0, 200) + "…" : body));
+                throw new Problem(502, "AUTH_FAILED", "全局鉴权登录失败（" + detail + "），请检查鉴权配置里的登录地址、请求方法和登录参数");
+            }
+            String path = nonempty(data, "tokenJsonPath", "$.token");
             Object value;
-            try { value = JsonPath.read(result.actual().get("body").toString(), nonempty(data, "tokenJsonPath", "$.token")); }
-            catch (RuntimeException e) { throw Problem.invalid("登录响应中没有配置的 Token 路径"); }
-            if (!(value instanceof String token) || token.isBlank()) throw Problem.invalid("登录 Token 必须为非空文本");
-            String prefix = nonempty(data, "headerPrefix", "Bearer ");
+            try { value = JsonPath.read(result.actual().get("body").toString(), path); }
+            catch (RuntimeException e) { throw Problem.invalid("登录成功（HTTP " + result.actual().get("status") + "）但响应里没有 Token 路径 " + path + "；" + loginHint(result.actual().get("body"))); }
+            if (!(value instanceof String token) || token.isBlank()) throw Problem.invalid("登录响应中 " + path + " 不是非空文本；" + loginHint(result.actual().get("body")));
+            String headerKey = nonempty(data, "headerKey", "Authorization");
+            // An empty prefix means "Bearer " for the standard Authorization header and the bare token for custom headers (token, X-Access-Token).
+            String prefix = Values.text(data, "headerPrefix", "");
+            if (prefix.isBlank()) prefix = headerKey.equalsIgnoreCase("Authorization") ? "Bearer " : "";
             if (!prefix.endsWith(" ") && !prefix.isEmpty()) prefix += " ";
-            Token issued = new Token(token, nonempty(data, "headerKey", "Authorization"), prefix);
-            Instant expiresAt = Instant.now().plusSeconds(Values.integer(data, "ttlSeconds", 1800, 1, 86400));
+            Token issued = new Token(token, headerKey, prefix);
+            Instant expiresAt = Instant.now().plusSeconds(Values.integer(data, "ttlSeconds", 1800, ExecutionLimits.AUTH_TTL_MIN_SECONDS, ExecutionLimits.AUTH_TTL_MAX_SECONDS));
             boolean cookieBound = !cookies.isEmpty() || Values.map(result.actual().get("headers")).keySet().stream().anyMatch(name -> name.equalsIgnoreCase("set-cookie"));
             if (cookieBound) {
                 // The server may rotate session cookies while logging in. Cache that resulting
@@ -91,6 +102,15 @@ public final class GlobalAuthService {
         cache.keySet().forEach(key -> cache.computeIfPresent(key, (ignored, entry) -> entry.borrowers == 0 && entry.expiresAt.isBefore(now) ? null : entry));
     }
     private String nonempty(Map<String, Object> data, String key, String fallback) { String value = Values.text(data, key, ""); return value.isBlank() ? fallback : value; }
+    /** Names the response's top-level fields and any error text, never the values: a login response carries the token itself. */
+    private String loginHint(Object body) {
+        try {
+            if (!(json.tree(Objects.toString(body, "")) instanceof Map<?, ?> map)) return "响应不是 JSON 对象，请确认登录接口和 Token 路径";
+            StringBuilder hint = new StringBuilder("响应顶层字段：" + String.join("、", map.keySet().stream().map(Object::toString).limit(20).toList()));
+            for (String key : List.of("msg", "message", "errMsg", "error", "errorMessage")) if (map.get(key) instanceof String text && !text.isBlank() && text.length() <= 120) { hint.append("；").append(key).append("：").append(text); break; }
+            return hint.append("。如果登录接口用 HTTP 200 返回业务错误，请检查登录参数").toString();
+        } catch (RuntimeException unreadable) { return "响应不是 JSON，请确认登录接口和 Token 路径"; }
+    }
     private String hash(String value) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
         catch (Exception e) { throw new IllegalStateException(e); }

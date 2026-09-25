@@ -9,8 +9,8 @@ import static org.assertj.core.api.Assertions.*;
 class ScenarioValidationIT extends ExchangeHttpTest {
     @Test void staticValidationDetectsProducerOrderAndStepOverrideLifetime() throws Exception {
         String project = project().id();
-        Asset producer = assets.create(project, AssetType.API_CASE, null, "登录", Map.of("path", "/login", "extractors", List.of(Map.of("variable", "token", "jsonpath", "$.token"))), "MANUAL");
-        Asset consumer = assets.create(project, AssetType.API_CASE, null, "下单", Map.of("path", "/orders", "headers", Map.of("Authorization", "Bearer ${token}")), "MANUAL");
+        Asset producer = assets.create(project, AssetType.API_CASE, null, "登录", Map.of("path", "http://127.0.0.1/login", "extractors", List.of(Map.of("variable", "token", "jsonpath", "$.token"))), "MANUAL");
+        Asset consumer = assets.create(project, AssetType.API_CASE, null, "下单", Map.of("path", "http://127.0.0.1/orders", "headers", Map.of("Authorization", "Bearer ${token}")), "MANUAL");
         Asset scenario = assets.create(project, AssetType.SCENARIO, null, "调用链", Map.of(), "MANUAL");
         Asset first = assets.create(project, AssetType.SCENARIO_STEP, scenario.id(), "错误的顺序", Map.of("targetId", consumer.id()), "MANUAL");
         Asset second = assets.create(project, AssetType.SCENARIO_STEP, scenario.id(), "登录", Map.of("targetId", producer.id()), "MANUAL");
@@ -20,7 +20,7 @@ class ScenarioValidationIT extends ExchangeHttpTest {
         assets.reorder(project, AssetType.SCENARIO_STEP, scenario.id(), List.of(new AssetService.OrderItem(second.id(), second.version()), new AssetService.OrderItem(first.id(), first.version())));
         assertThat(validate(project, scenario.id(), Map.of())).containsEntry("valid", true);
 
-        Asset temp = assets.create(project, AssetType.API_CASE, null, "临时参数", Map.of("path", "/items/${temporary}"), "MANUAL");
+        Asset temp = assets.create(project, AssetType.API_CASE, null, "临时参数", Map.of("path", "http://127.0.0.1/items/${temporary}"), "MANUAL");
         Asset local = assets.create(project, AssetType.SCENARIO, null, "步骤变量作用域", Map.of(), "MANUAL");
         assets.create(project, AssetType.SCENARIO_STEP, local.id(), "局部覆盖", Map.of("targetId", temp.id(), "variables", Map.of("temporary", 1)), "MANUAL");
         assets.create(project, AssetType.SCENARIO_STEP, local.id(), "覆盖已过期", Map.of("targetId", temp.id()), "MANUAL");
@@ -36,6 +36,16 @@ class ScenarioValidationIT extends ExchangeHttpTest {
         assertThat(objects(result.get("errors"))).anySatisfy(error -> assertThat(error.get("message").toString()).contains("循环"));
         environment = assets.update(project, environment.id(), environment.version(), null, Map.of("variables", Map.of("seed", "fixed")), null, "MANUAL");
         assertThat(validate(project, api.id(), Map.of("environmentId", environment.id(), "datasetId", dataset.id()))).containsEntry("valid", true);
+    }
+    @Test void theGlobalLoginTokenIsAvailableAndOtherExternalInputsAreGapsNotBrokenOrder() throws Exception {
+        String project = project().id();
+        Asset api = assets.create(project, AssetType.API_CASE, null, "带登录态的查询", Map.of("path", "http://127.0.0.1/orders", "headers", Map.of("Authorization", "Bearer ${token}")), "MANUAL");
+        var withoutLogin = validate(project, api.id(), Map.of());
+        assertThat(withoutLogin).containsEntry("valid", false);
+        assertThat(objects(withoutLogin.get("errors"))).singleElement().satisfies(error -> assertThat(error).containsEntry("variable", "token").containsEntry("code", "RUNTIME_VARIABLE_REQUIRED"));
+        Asset environment = assets.create(project, AssetType.ENVIRONMENT, null, "测试环境", Map.of("baseUrl", "http://127.0.0.1:1"), "MANUAL");
+        assets.create(project, AssetType.AUTH_CONFIG, null, "全局登录", Map.of("environmentId", environment.id(), "loginUrl", "/login", "tokenJsonPath", "$.token"), "MANUAL");
+        assertThat(validate(project, api.id(), Map.of("environmentId", environment.id()))).as("HttpAssetExecutor publishes ${token} after the global login").containsEntry("valid", true);
     }
     private Map<String, Object> validate(String project, String id, Map<String, Object> body) throws Exception {
         var response = request("POST", "/api/projects/" + project + "/assets/" + id + "/validate-execution", body);

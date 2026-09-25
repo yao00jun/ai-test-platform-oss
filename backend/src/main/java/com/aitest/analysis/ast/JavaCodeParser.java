@@ -14,7 +14,8 @@ import static com.aitest.analysis.ast.AstValues.*;
 /** Parses Java syntax without class loading, compilation, annotation processing or application startup. */
 @Component
 public final class JavaCodeParser {
-    public static final String FORMAT_VERSION = "aitest.java-ast/v3";
+    /** v4: mapper statements carry rendered dynamic SQL, so older snapshots are re-read with the current parser. */
+    public static final String FORMAT_VERSION = "aitest.java-ast/v4";
     private static final Set<String> CONSTRAINTS = Set.of("NotNull", "NotBlank", "NotEmpty", "Null", "Min", "Max", "DecimalMin", "DecimalMax", "Positive", "PositiveOrZero", "Negative", "NegativeOrZero", "Size", "Pattern", "Email", "Digits", "Past", "PastOrPresent", "Future", "FutureOrPresent", "AssertTrue", "AssertFalse", "Valid");
     public Map<String, List<Map<String, Object>>> parse(String path, String source, List<SourceDiagnostic> diagnostics) {
         Map<String, List<Map<String, Object>>> result = empty();

@@ -36,8 +36,9 @@ public final class UiSourceValidator {
             String frame = Values.text(candidate.data(), "frame", "");
             for (String field : List.of("selector", "targetSelector")) {
                 String selector = Values.text(candidate.data(), field, ""); if (selector.isBlank()) continue;
-                var matches = Values.objects(runtime.get("locators")).stream().filter(locator -> frame.equals(Values.text(locator, "frame", "")) && same(selector, Values.text(locator, "selector", ""))).toList();
-                if (matches.isEmpty() && frame.isBlank()) matches = Values.objects(frontend.get("selectors")).stream().filter(locator -> same(selector, Values.text(locator, "selector", ""))).toList();
+                if (!parseable(selector)) continue;
+                var matches = Values.objects(runtime.get("locators")).stream().filter(locator -> frame.equals(Values.text(locator, "frame", "")) && safeSame(selector, Values.text(locator, "selector", ""))).toList();
+                if (matches.isEmpty() && frame.isBlank()) matches = Values.objects(frontend.get("selectors")).stream().filter(locator -> safeSame(selector, Values.text(locator, "selector", ""))).toList();
                 if (matches.isEmpty()) throw invalid(field + " 没有固定源码、页面或录制依据：" + selector);
                 for (var match : matches) { Map<String, Object> value = new LinkedHashMap<>(match); value.put("field", field); evidence.add(value); }
             }
@@ -57,6 +58,8 @@ public final class UiSourceValidator {
         for (var nested : Values.objects(observation.get("frames"))) if (!nested.containsKey("unavailableReason") && !Values.text(nested, "frame", "").isBlank()) collect(nested, nested.get("frame").toString(), locators, urls);
     }
     private static boolean same(String left, String right) { return canonical(left).equals(canonical(right)); }
+    private static boolean safeSame(String left, String right) { try { return same(left, right); } catch (RuntimeException invalid) { return false; } }
+    private static boolean parseable(String selector) { try { canonical(selector); return true; } catch (RuntimeException invalid) { return false; } }
     private static Object canonical(String value) {
         if (value.isBlank()) return "";
         var id = java.util.regex.Pattern.compile("^#([A-Za-z_][A-Za-z0-9_-]*)$").matcher(value);

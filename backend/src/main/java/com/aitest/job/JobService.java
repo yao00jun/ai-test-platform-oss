@@ -120,6 +120,11 @@ public class JobService {
         jdbc.update("UPDATE job_task SET progress=?,message=?,updated_at=? WHERE id=? AND status='RUNNING'", Math.clamp(progress, 0, 99), message, Timestamp.from(Instant.now()), id);
         event(id, projectId, "progress", Map.of("progress", Math.clamp(progress, 0, 99), "message", message));
     }
+    public void status(String projectId, String id, String message) {
+        checkpoint(projectId, id);
+        jdbc.update("UPDATE job_task SET message=?,updated_at=? WHERE id=? AND status='RUNNING'", message, Timestamp.from(Instant.now()), id);
+        event(id, projectId, "progress", Map.of("message", message));
+    }
     public void event(String jobId, String projectId, String type, Map<String, Object> payload) {
         Map<String, Object> data = new LinkedHashMap<>(payload); data.put("jobId", jobId); data.put("projectId", projectId);
         jdbc.update("INSERT INTO job_event(job_id,event_type,payload,created_at) VALUES(?,?,?,?)", jobId, type, json.write(data), Timestamp.from(Instant.now()));
@@ -179,7 +184,7 @@ public class JobService {
             Thread.interrupted();
             String message = e instanceof Problem p ? p.getMessage() : "任务执行错误（" + e.getClass().getSimpleName() + rootCauseSummary(e) + "）";
             if (!(e instanceof Problem)) org.slf4j.LoggerFactory.getLogger(JobService.class).error("Job {} failed unexpectedly", id, e);
-            finish(projectId, id, "FAILED", Map.of(), message);
+            finish(projectId, id, "FAILED", Map.of(), json.write(errorDetails(e, message)));
         } finally { running.remove(id); slots.release(); }
     }
     /** The innermost cause, e.g. the database column that rejected a value, shortened so the UI stays readable. */
@@ -204,9 +209,16 @@ public class JobService {
     }
     private void finishLocked(String projectId, String id, String status, Object result, String error) {
         jdbc.update("UPDATE job_task SET status=?,progress=?,result=?,error=?,lease_until=NULL,updated_at=? WHERE id=?", status, status.equals("SUCCEEDED") ? 100 : 0, json.write(result), error, Timestamp.from(Instant.now()), id);
-        if (error != null) event(id, projectId, "error", Map.of("message", error));
+        if (error != null) event(id, projectId, "error", errorPayload(error));
         if (status.equals("SUCCEEDED")) event(id, projectId, "result", Map.of("result", result));
         event(id, projectId, "done", Map.of("status", status, "result", result == null ? Map.of() : result));
+    }
+    private Map<String, Object> errorDetails(Exception failure, String message) {
+        if (failure instanceof Problem problem) return Map.of("code", problem.code(), "message", message, "details", problem.details() == null ? Map.of() : problem.details());
+        return Map.of("code", "INTERNAL_ERROR", "message", message, "details", Map.of());
+    }
+    private Map<String, Object> errorPayload(String error) {
+        try { return json.map(error); } catch (RuntimeException ignored) { return Map.of("message", error); }
     }
     @Scheduled(fixedDelay = 5000, initialDelayString = "${aitest.execution.lease-initial-delay-ms:2000}")
     public void leases() {

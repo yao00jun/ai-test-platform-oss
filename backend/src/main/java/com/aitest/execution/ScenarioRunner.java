@@ -30,7 +30,7 @@ public final class ScenarioRunner {
                     context.beginStep();
                     context.variables().putAll(Values.map(variables.resolve(step.data().get("variables"), saved)));
                     if (Values.text(step.data(), "stepType", "HTTP").equals("WAIT")) {
-                        int wait = Values.integer(step.data(), "waitMs", 0, 0, 60000);
+                        int wait = Values.integer(step.data(), "waitMs", 0, ExecutionLimits.WAIT_MIN_MS, ExecutionLimits.WAIT_MAX_MS);
                         for (int elapsed = 0; elapsed < wait; elapsed += 100) {
                             context.checkpoint(); try { Thread.sleep(Math.min(100, wait - elapsed)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new CancellationException(); }
                         }

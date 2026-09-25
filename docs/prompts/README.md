@@ -7,10 +7,10 @@
 | `ba_requirement_parser.st` | 需求规则、歧义与遗漏提取 |
 | `functional_case_generation.st` | 功能用例与步骤，以 MeterSphere Markdown 定界协议输出 |
 | `api_case_generation.st` | 接口用例、请求参数与场景上下文 |
-| `auto_assertion_generation.st` | 可执行断言与 SQL 校验建议 |
+| `sql_validation_generation.st` | 批量生成后置 SQL 校验建议 |
 | `bug_auto_creation.st` | 基于实际运行证据的缺陷诊断 |
 | `test_summary_report.st` | 基于冻结统计与证据的质量总结 |
-| `agentic_pipeline_orchestration.st` | 多阶段流水线编排约束 |
+| `ui_case_generation.st` | 页面证据约束下的 UI 场景与步骤 |
 | `asset_generation.st` | 各领域资产统一候选契约 |
 | `local_refinement.st` | 单目标、允许字段、当前版本及用户反馈 |
 | `pipeline_feedback.st` | 全局多轮反馈的选择性变更集 |

@@ -53,23 +53,32 @@ public final class BugDiagnosisService implements JobHandler {
         List<Map<String, Object>> results = new ArrayList<>();
         for (var failure : failures) {
             job.checkpoint();
-            var existing = occurrences.existing(job.projectId(), failure);
-            if (existing != null) { results.add(existing); continue; }
-            conversations.recordUser(conversation, job.id(), "根据实际失败记录诊断：" + failure.caseName(), null, failure.evidence());
-            Draft draft = occurrences.known(job.projectId(), failure.fingerprint())
-                    ? new Draft("记录新的失败证据，保留已有人工结论和状态", Map.of("source", "EXISTING_DEFECT"), "existing")
-                    : generate(job, failure, conversation);
-            Map<String, Object> recorded;
             try {
-                recorded = recordTransactions.execute(tx -> job.atomic(() -> {
-                    // Keep job -> project ordering and hold the project lock through the write.
-                    // A durable pipeline cancellation or replacement fences even this in-flight job.
-                    if (input.get("pipelineId") != null) pipelines.requireActive(job.projectId(), input.get("pipelineId").toString(), job.id());
-                    var value = occurrences.record(job.projectId(), job.id(), failure, draft.candidate(), draft.stamp(), prompts.version("bug_auto_creation"));
-                    conversations.recordAssistant(conversation, job.id(), draft.raw(), "APPLIED", null, null, draft.candidate(), value, draft.stamp(), prompts.version("bug_auto_creation")); return value;
-                }));
-            } catch (RuntimeException failed) { failed(conversation, job, draft.raw(), draft.stamp(), failed); throw failed; }
-            results.add(recorded); job.event("diagnosis", recorded);
+                var existing = occurrences.existing(job.projectId(), failure);
+                if (existing != null) results.add(existing);
+                else {
+                    conversations.recordUser(conversation, job.id(), "根据实际失败记录诊断：" + failure.caseName(), null, failure.evidence());
+                    Draft draft = occurrences.known(job.projectId(), failure.fingerprint())
+                            ? new Draft("记录新的失败证据，保留已有人工结论和状态", Map.of("source", "EXISTING_DEFECT"), "existing")
+                            : generate(job, failure, conversation);
+                    Map<String, Object> recorded;
+                    try {
+                        recorded = recordTransactions.execute(tx -> job.atomic(() -> {
+                            // Keep job -> project ordering and hold the project lock through the write.
+                            // A durable pipeline cancellation or replacement fences even this in-flight job.
+                            if (input.get("pipelineId") != null) pipelines.requireActive(job.projectId(), input.get("pipelineId").toString(), job.id());
+                            var value = occurrences.record(job.projectId(), job.id(), failure, draft.candidate(), draft.stamp(), prompts.version("bug_auto_creation"));
+                            conversations.recordAssistant(conversation, job.id(), draft.raw(), "APPLIED", null, null, draft.candidate(), value, draft.stamp(), prompts.version("bug_auto_creation")); return value;
+                        }));
+                    } catch (RuntimeException failed) { failed(conversation, job, draft.raw(), draft.stamp(), failed); throw failed; }
+                    results.add(recorded); job.event("diagnosis", recorded);
+                }
+            } catch (java.util.concurrent.CancellationException | JobService.LeaseLostException stopped) {
+                throw stopped;
+            } catch (RuntimeException failed) {
+                results.add(Map.of("failureKey", failure.key(), "caseId", failure.caseId(), "caseName", failure.caseName(),
+                        "status", "FAILED", "error", failed instanceof Problem problem ? problem.getMessage() : "诊断此失败项时发生异常"));
+            }
             job.progress(Math.min(98, results.size() * 98 / failures.size()), "已诊断 " + results.size() + "/" + failures.size() + " 个失败检查");
         }
         return job.completeAtomically(() -> Map.of("runId", input.get("runId"), "items", results, "failureCount", failures.size()));
@@ -88,16 +97,23 @@ public final class BugDiagnosisService implements JobHandler {
                 var fields = new HashSet<>(candidate.keySet()); fields.remove("codeDiagnosis");
                 if (!fields.equals(FIELDS)) throw Problem.invalid("缺陷诊断字段不完整或包含未知字段");
                 if (candidate.containsKey("codeDiagnosis")) {
-                    var checked = code.validate(candidate.get("codeDiagnosis"), com.aitest.execution.Values.map(failure.evidence().get("sourceEvidence")));
-                    candidate.put("codeDiagnosis", checked);
-                    if (candidate.get("rootCauseAnalysis") instanceof String rootText && rootText.isBlank() && checked.get("root_cause") instanceof String root && !root.isBlank()) candidate.put("rootCauseAnalysis", root);
+                    try {
+                        var checked = code.validate(candidate.get("codeDiagnosis"), com.aitest.execution.Values.map(failure.evidence().get("sourceEvidence")));
+                        candidate.put("codeDiagnosis", checked);
+                        if (candidate.get("rootCauseAnalysis") instanceof String rootText && rootText.isBlank() && checked.get("root_cause") instanceof String root && !root.isBlank()) candidate.put("rootCauseAnalysis", root);
+                    } catch (RuntimeException invalidCodeDiagnosis) {
+                        candidate.put("codeDiagnosis", Map.of());
+                    }
                 }
                 for (String key : FIELDS) if (!(candidate.get(key) instanceof String value) || value.isBlank() || value.length() > (key.equals("title") ? 255 : 20000)) throw Problem.invalid("诊断字段为空、过长或不是文本：" + key);
                 if (!Set.of("BLOCKER", "CRITICAL", "MAJOR", "MINOR").contains(candidate.get("severity"))) throw Problem.invalid("诊断严重度必须为单个合法值");
                 return new Draft(raw, candidate, stamp);
             } catch (Problem invalid) {
                 if (attempt == 1) throw invalid;
-                raw = gateway.complete(model, job, "bug_auto_creation", "FORMAT_REPAIR", prompts.load("bug_auto_creation"), json.write(Map.of("context", context, "invalidOutput", raw, "validationError", invalid.getMessage())), token -> job.event("token", Map.of("content", token)));
+                // A structural repair needs the draft and the error, not the full evidence again (sent once already, as an object this time).
+                Map<String, Object> facts = new LinkedHashMap<>();
+                for (String key : List.of("caseName", "stepName", "engine", "failedAssertions")) if (failure.evidence().get(key) != null) facts.put(key, failure.evidence().get(key));
+                raw = gateway.complete(model, job, "bug_auto_creation", "FORMAT_REPAIR", prompts.load("bug_auto_creation"), json.write(Map.of("failure", facts, "invalidOutput", raw, "validationError", invalid.getMessage(), "instruction", "仅修复输出结构和不合规字段，不改变诊断结论")), token -> job.event("token", Map.of("content", token)));
             }
         }
         } catch (RuntimeException failed) { failed(conversation, job, raw, stamp, failed); throw failed; }

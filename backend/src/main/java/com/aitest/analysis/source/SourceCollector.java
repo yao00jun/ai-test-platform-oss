@@ -84,7 +84,8 @@ public final class SourceCollector {
     }
     public static boolean supported(String kind, String path) {
         String normalized = path.replace('\\', '/').toLowerCase(Locale.ROOT);
-        if (Arrays.stream(normalized.split("/")).anyMatch(part -> part.startsWith(".") || EXCLUDED.contains(part))) return false;
+        if (Arrays.stream(normalized.split("/")).anyMatch(part -> part.startsWith(".") || part.equals("public") || EXCLUDED.contains(part))) return false;
+        if (normalized.endsWith(".min.js")) return false;
         return switch (kind) {
             case "BACKEND", "BASELINE" -> normalized.endsWith(".java") || normalized.endsWith(".xml");
             case "FRONTEND" -> normalized.endsWith(".vue") || normalized.endsWith(".tsx") || normalized.endsWith(".jsx") || normalized.endsWith(".js") || normalized.endsWith(".ts") || normalized.endsWith(".html");

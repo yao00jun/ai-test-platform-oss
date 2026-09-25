@@ -22,9 +22,11 @@ public class ScenarioDependencyValidator {
         List<Map<String, Object>> errors = new ArrayList<>(ExecutionConfiguration.errors(definition)); Set<String> available = new TreeSet<>();
         for (RunDefinition.Item item : definition.items()) {
             if (item.mode().equals("MANUAL") || item.type() == AssetType.FUNCTIONAL_CASE) continue;
-            Scope scope = new Scope(definition.graph().environmentVariables()); scope.values.putAll(item.variables());
-            Object overrides = scope.values.remove("__planOverrides");
             Asset root = definition.graph().get(item.assetId());
+            Scope scope = new Scope(definition.graph().environmentVariables(), produced(root, definition.graph())); scope.values.putAll(item.variables());
+            // Global login publishes ${token} before every HTTP step (HttpAssetExecutor); it is not an environment variable.
+            if (globalAuth(definition.graph())) scope.values.putIfAbsent("token", UNKNOWN);
+            Object overrides = scope.values.remove("__planOverrides");
             check(root, "plan.variables", overrides, scope, item.rowIndex(), errors);
             scope.bind(Values.map(overrides));
             walk(root, definition.graph(), scope, item.rowIndex(), errors);
@@ -39,7 +41,7 @@ public class ScenarioDependencyValidator {
             for (Asset step : graph.children(asset.id())) {
                 if (step.type() == AssetType.SQL_VALIDATION) { walk(step, graph, scope, row, errors); continue; }
                 if (step.type() != AssetType.SCENARIO_STEP) continue;
-                Scope local = new Scope(scope.values);
+                Scope local = new Scope(scope.values, scope.produced);
                 check(step, "variables", step.data().get("variables"), local, row, errors); local.bind(Values.map(step.data().get("variables")));
                 if (!Values.text(step.data(), "stepType", "HTTP").equals("WAIT")) {
                     walk(graph.get(Values.text(step.data(), "targetId", "")), graph, local, row, errors);
@@ -64,7 +66,7 @@ public class ScenarioDependencyValidator {
             return;
         }
         if (asset.type() == AssetType.SQL_VALIDATION) {
-            Scope sql = new Scope(scope.values);
+            Scope sql = new Scope(scope.values, scope.produced);
             check(asset, "parameters", asset.data().get("parameters"), scope, row, errors); sql.bind(Values.map(asset.data().get("parameters")));
             for (String field : List.of("sql", "assertions")) check(asset, field, asset.data().get(field), sql, row, errors);
         } else {
@@ -77,8 +79,36 @@ public class ScenarioDependencyValidator {
     private void check(Asset asset, String field, Object input, Scope scope, Integer row, List<Map<String, Object>> errors) {
         for (String reference : variables.references(input)) {
             try { scope.reference(reference, new LinkedHashSet<>()); }
-            catch (DependencyFailure failure) { issue(asset, field, failure.variable, failure.getMessage(), row, errors); }
+            catch (DependencyFailure failure) {
+                // A variable no step of this item produces has to come from outside: a gap to fill before running, not a broken order.
+                if (failure.missing && !scope.produced.contains(failure.variable.split("\\.", 2)[0])) {
+                    if (errors.size() >= 1000) continue;
+                    Map<String, Object> gap = new LinkedHashMap<>(); gap.put("assetId", asset.id()); gap.put("name", asset.name()); gap.put("field", field); gap.put("variable", failure.variable); gap.put("code", "RUNTIME_VARIABLE_REQUIRED");
+                    gap.put("message", failure.variable.equals("token") ? "运行前需要为环境启用全局鉴权（登录后提供 ${token}），或在环境变量中提供 token" : "运行前需要在环境变量、数据集或计划变量中提供 ${" + failure.variable + "}");
+                    if (row != null) gap.put("rowIndex", row + 1); errors.add(gap);
+                } else issue(asset, field, failure.variable, failure.getMessage(), row, errors);
+            }
         }
+    }
+    /** Everything any part of this run item can publish: extractors, SQL exports, UI extracts and declared variables. */
+    private static Set<String> produced(Asset root, AssetGraph graph) {
+        Set<String> names = new HashSet<>(); Set<String> seen = new HashSet<>(); ArrayDeque<Asset> pending = new ArrayDeque<>();
+        if (root != null) pending.add(root);
+        while (!pending.isEmpty()) {
+            Asset asset = pending.removeFirst(); if (asset == null || !seen.add(asset.id())) continue;
+            names.addAll(ExecutionAssetPolicy.exported(asset));
+            if (Set.of(AssetType.SCENARIO, AssetType.SCENARIO_STEP).contains(asset.type())) names.addAll(Values.map(asset.data().get("variables")).keySet());
+            pending.addAll(graph.children(asset.id()));
+            if (asset.type() == AssetType.SCENARIO_STEP) {
+                String target = Values.text(asset.data(), "targetId", "");
+                if (!target.isBlank() && graph.assets().containsKey(target)) pending.add(graph.get(target));
+            }
+        }
+        return names;
+    }
+    private static boolean globalAuth(AssetGraph graph) {
+        Asset environment = graph.environment();
+        return environment != null && graph.assets().values().stream().anyMatch(item -> item.type() == AssetType.AUTH_CONFIG && Values.bool(item.data(), "enabled", true) && environment.id().equals(item.data().get("environmentId")));
     }
     private void issue(Asset asset, String field, String variable, String message, Integer row, List<Map<String, Object>> errors) {
         if (errors.size() >= 1000) return;
@@ -86,14 +116,16 @@ public class ScenarioDependencyValidator {
         if (row != null) error.put("rowIndex", row + 1); errors.add(error);
     }
     private static final class DependencyFailure extends RuntimeException {
-        final String variable;
-        DependencyFailure(String variable, String message) { super(message); this.variable = variable; }
+        final String variable; final boolean missing;
+        DependencyFailure(String variable, String message) { this(variable, message, false); }
+        DependencyFailure(String variable, String message, boolean missing) { super(message); this.variable = variable; this.missing = missing; }
     }
     private static final class Scope {
         private static final Pattern VARIABLE = Pattern.compile("\\$\\{([^{}]+)}");
         final Map<String, Object> values = new LinkedHashMap<>();
         final Set<String> published = new LinkedHashSet<>();
-        Scope(Map<String, Object> initial) { values.putAll(initial); }
+        final Set<String> produced;
+        Scope(Map<String, Object> initial, Set<String> produced) { values.putAll(initial); this.produced = produced; }
         void publish(String name, Object value) { values.put(name, value); published.add(name); }
         void bind(Map<String, Object> additions) {
             Map<String, Object> resolved = new LinkedHashMap<>();
@@ -110,7 +142,7 @@ public class ScenarioDependencyValidator {
                     value = values;
                     for (String part : name.split("\\.")) {
                         if (value == UNKNOWN) return UNKNOWN;
-                        if (!(value instanceof Map<?, ?> map) || !map.containsKey(part)) throw new DependencyFailure(name, "此步骤之前没有可用变量：" + name);
+                        if (!(value instanceof Map<?, ?> map) || !map.containsKey(part)) throw new DependencyFailure(name, "此步骤之前没有可用变量：" + name, true);
                         value = map.get(part);
                     }
                 }

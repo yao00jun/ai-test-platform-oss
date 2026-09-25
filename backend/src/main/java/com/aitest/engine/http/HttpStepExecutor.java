@@ -54,12 +54,15 @@ public final class HttpStepExecutor {
             }
             if (bytes.length > 32 * 1024 * 1024) throw Problem.invalid("HTTP 请求体超过 32 MB");
             request.put("method", method); request.put("url", url); request.put("headers", headers); request.put("body", body == null ? "" : body);
-            response = transport.exchange(method, url, headers, bytes, Values.integer(spec, "timeoutMs", 30000, 50, 300000), options, context);
+            response = transport.exchange(method, url, headers, bytes, Values.integer(spec, "timeoutMs", 30000, ExecutionLimits.HTTP_TIMEOUT_MIN_MS, ExecutionLimits.HTTP_TIMEOUT_MAX_MS), options, context);
             checks = assertions.evaluate(Values.objects(spec.get("assertions")), response, context.variables());
+            int responseStatus = ((Number) response.get("status")).intValue();
             Map<String, Object> exports = new LinkedHashMap<>();
+            boolean extractionAllowed = responseStatus < 400;
             for (var extractor : Values.objects(spec.get("extractors"))) {
                 String name = Values.text(extractor, "variable", "");
                 if (!name.matches("[A-Za-z_][A-Za-z0-9_.-]{0,127}")) throw Problem.invalid("变量提取器需要有效的 variable 名称");
+                if (!extractionAllowed) continue;
                 Object value;
                 String type = Values.text(extractor, "type", "jsonpath");
                 if (type.equals("header")) {
@@ -70,9 +73,8 @@ public final class HttpStepExecutor {
                 if (value == null) throw Problem.invalid("提取变量 " + name + " 的结果为空");
                 exports.put(name, value);
             }
-            context.publish(exports);
-            boolean passed = checks.stream().allMatch(AssertionResult::passed);
-            if (checks.isEmpty()) passed = ((Number) response.get("status")).intValue() < 400;
+            if (extractionAllowed) context.publish(exports);
+            boolean passed = responseStatus < 400 && checks.stream().allMatch(AssertionResult::passed);
             return new StepResult(passed ? "PASSED" : "FAILED", elapsed(started), request, response, checks, exports, List.of(), passed ? null : "HTTP 响应或断言失败");
         } catch (CancellationException e) { throw e; }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new CancellationException("HTTP 执行已中断"); }

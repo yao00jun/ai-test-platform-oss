@@ -49,7 +49,11 @@ public final class DatabaseSchemaService {
                 for (int index = 1; index <= count; index++) statement.setObject(index, null);
                 try (ResultSet ignored = statement.executeQuery()) { return Map.of("valid", true, "databaseSourceId", id, "sourceVersion", source.version(), "parameterCount", count); }
             }
-        } catch (SQLException error) { throw new Problem(422, "SCHEMA_QUERY_INVALID", "业务数据库不能解析此查询，请检查表名、列名和 SELECT 语法（SQLState " + Objects.toString(error.getSQLState(), "unknown") + "）"); }
+        } catch (SQLException error) {
+            String state = Objects.toString(error.getSQLState(), "");
+            if (state.startsWith("08") || state.startsWith("28")) throw new Problem(502, "DATABASE_CONNECTION_FAILED", "连接业务数据库失败，请检查地址、账号、密码和访问权限");
+            throw new Problem(422, "SCHEMA_QUERY_INVALID", "业务数据库不能解析此查询，请检查表名、列名和 SELECT 语法（SQLState " + (state.isBlank() ? "unknown" : state) + "）");
+        }
     }
     private Asset source(String project, String id) { Asset source = assets.getInternal(project, id); if (source.type() != AssetType.DATABASE_SOURCE) throw Problem.invalid("目标不是业务数据源"); return source; }
 }

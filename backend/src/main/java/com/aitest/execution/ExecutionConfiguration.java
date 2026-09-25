@@ -12,6 +12,8 @@ public final class ExecutionConfiguration {
         for (var item : definition.items()) if (!item.mode().equals("MANUAL") && item.type() != AssetType.FUNCTIONAL_CASE) pending.add(definition.graph().get(item.assetId()));
         while (!pending.isEmpty()) {
             Asset asset = pending.removeFirst(); if (!visited.add(asset.id())) continue;
+            if (definition.graph().environment() == null && needsEnvironment(asset, definition.graph()))
+                errors.add(gap(asset, "environmentId", "ENVIRONMENT_REQUIRED", "自动化执行需要先选择环境；环境提供 API 基础地址、公共请求头和运行变量"));
             if (asset.type() == AssetType.SQL_VALIDATION && Values.text(asset.data(), "databaseSourceId", "").isBlank())
                 errors.add(gap(asset, "databaseSourceId", "DATABASE_SOURCE_REQUIRED", "SQL 草稿尚未绑定业务数据源，未发起任何执行"));
             if (asset.type() == AssetType.UI_SCENARIO && !Values.text(asset.data(), "sourceSnapshotId", "").isBlank()) {
@@ -29,11 +31,19 @@ public final class ExecutionConfiguration {
         var errors = errors(definition); if (!errors.isEmpty()) throw new Problem(422, "EXECUTION_CONFIGURATION_REQUIRED", "测试资产仍有未配置的执行条件", errors);
     }
     public static boolean onlyConfigurationGaps(Map<String, Object> validation) {
-        return Values.objects(validation.get("errors")).stream().allMatch(error -> Set.of("DATABASE_SOURCE_REQUIRED", "WEB_BASE_URL_REQUIRED").contains(Objects.toString(error.get("code"), "")));
+        return Values.objects(validation.get("errors")).stream().allMatch(error -> Set.of("ENVIRONMENT_REQUIRED", "DATABASE_SOURCE_REQUIRED", "WEB_BASE_URL_REQUIRED", "RUNTIME_VARIABLE_REQUIRED").contains(Objects.toString(error.get("code"), "")));
     }
     public static Map<String, Object> data(Asset asset) {
         Map<String, Object> data = new LinkedHashMap<>(asset.data()); data.remove("generationEvidence"); return data;
     }
     private static Map<String, Object> gap(Asset asset, String field, String code, String message) { return Map.of("assetId", asset.id(), "name", asset.name(), "field", field, "code", code, "message", message); }
+    private static boolean needsEnvironment(Asset asset, AssetGraph graph) {
+        if (asset.type() == AssetType.API_CASE) return !Values.text(asset.data(), "path", "").matches("https?://.+");
+        if (asset.type() == AssetType.UI_SCENARIO) return Values.text(asset.data(), "baseUrl", "").isBlank()
+                && graph.children(asset.id()).stream().noneMatch(step -> "navigate".equals(step.data().get("action")) && Values.text(step.data(), "url", "").matches("https?://.+"));
+        // The referenced API/UI asset is also queued and owns the address check. A
+        // scenario step itself has no URL and must not create a duplicate gap.
+        return false;
+    }
     private ExecutionConfiguration() { }
 }

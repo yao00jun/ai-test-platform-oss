@@ -112,7 +112,7 @@ class ModelTransportBoundaryTest {
         AtomicInteger requests = new AtomicInteger();
         try (GatewayFixture server = new GatewayFixture(exchange -> { exchange.getRequestBody().readAllBytes(); requests.incrementAndGet(); exchange.close(); })) {
             assertThatThrownBy(() -> new CompanyModelGateway().complete(server.settings(), "输出正文", "开始", token -> { }, () -> { }))
-                    .isInstanceOfSatisfying(Problem.class, problem -> { assertThat(problem.code()).isEqualTo("MODEL_REQUEST_FAILED"); assertThat(problem.getMessage()).contains("连接中断"); });
+                    .isInstanceOfSatisfying(Problem.class, problem -> { assertThat(problem.code()).isEqualTo("MODEL_REQUEST_FAILED"); assertThat(problem.getMessage()).contains("连接中断").contains("已自动重试一次仍失败"); });
             assertThat(requests).hasValue(2);
         }
     }
@@ -202,6 +202,89 @@ class ModelTransportBoundaryTest {
         }
     }
 
+    @Test void aCallThatOutlivesItsBudgetIsReportedAsATimeoutWithTheConfiguredLimit() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (GatewayFixture server = new GatewayFixture(exchange -> {
+            exchange.getRequestBody().readAllBytes(); requests.incrementAndGet();
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+            // Keeps producing content well past the two-second budget, like a long generation on a slow model.
+            try { for (int i = 0; i < 60; i++) { exchange.getResponseBody().write(chunk("字").getBytes(StandardCharsets.UTF_8)); exchange.getResponseBody().flush(); Thread.sleep(100); } }
+            catch (IOException | InterruptedException closedByClient) { /* The client gave up, as expected. */ }
+            finally { exchange.close(); }
+        })) {
+            var telemetry = new ModelCallTelemetry();
+            ModelSettings settings = new ModelSettings(server.url(), "fixture-key", "fixture", 0.2, 2, "1");
+            assertThatThrownBy(() -> new CompanyModelGateway().complete(settings, "输出正文", "开始", token -> { }, () -> { }, telemetry))
+                    .isInstanceOfSatisfying(Problem.class, problem -> {
+                        assertThat(problem.code()).isEqualTo("MODEL_REQUEST_TIMEOUT");
+                        assertThat(problem.getMessage()).contains("超过 2 秒上限").contains("已收到约").contains("单次调用超时").doesNotContain("重试").doesNotContain("连接中断");
+                    });
+            assertThat(requests).hasValue(1);
+            assertThat(telemetry.httpAttempts()).isEqualTo(1);
+        }
+    }
+
+    @Test void aConnectionLostAfterPartialContentIsNotReplayedAndDoesNotClaimARetry() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (RawGateway server = new RawGateway(socket -> {
+            requests.incrementAndGet();
+            var out = socket.getOutputStream();
+            String event = chunk("部分内容");
+            byte[] body = event.getBytes(StandardCharsets.UTF_8);
+            out.write(("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n" + Integer.toHexString(body.length) + "\r\n").getBytes(StandardCharsets.US_ASCII));
+            out.write(body); out.write("\r\n".getBytes(StandardCharsets.US_ASCII)); out.flush();
+            Thread.sleep(300);
+            socket.close(); // No terminating chunk: the stream is cut mid-response.
+        })) {
+            List<String> tokens = new CopyOnWriteArrayList<>();
+            ModelSettings settings = new ModelSettings(server.url(), "fixture-key", "fixture", 0.2, 20, "1");
+            assertThatThrownBy(() -> new CompanyModelGateway().complete(settings, "输出正文", "开始", tokens::add, () -> { }))
+                    .isInstanceOfSatisfying(Problem.class, problem -> {
+                        assertThat(problem.code()).isEqualTo("MODEL_REQUEST_FAILED");
+                        assertThat(problem.getMessage()).contains("连接中断").contains("没有自动重试").doesNotContain("已自动重试");
+                    });
+            assertThat(tokens).containsExactly("部分内容");
+            assertThat(requests).hasValue(1);
+        }
+    }
+
+    @Test void waitingForTheRequestsPerMinuteCapDoesNotCountAgainstTheCallBudget() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        try (GatewayFixture server = new GatewayFixture(exchange -> { exchange.getRequestBody().readAllBytes(); requests.incrementAndGet(); reply(exchange, 200, "text/event-stream", stream("完成", "stop")); })) {
+            var gateway = new CompanyModelGateway(new ModelRequestLimiter(java.time.Duration.ofMillis(1500)));
+            // One request per window and a one-second budget: the second call queues longer than its budget, then still succeeds.
+            ModelSettings settings = new ModelSettings(server.url(), "fixture-key", "fixture", 0.2, 1, "1", false, 1);
+            assertThat(gateway.complete(settings, "输出正文", "开始", token -> { }, () -> { })).isEqualTo("完成");
+            List<String> statuses = new CopyOnWriteArrayList<>();
+            long started = System.nanoTime();
+            assertThat(gateway.complete(settings, "输出正文", "开始", token -> { }, () -> { }, new ModelCallTelemetry(), statuses::add)).isEqualTo("完成");
+            assertThat(java.time.Duration.ofNanos(System.nanoTime() - started)).isGreaterThan(java.time.Duration.ofMillis(1000));
+            assertThat(statuses).anySatisfy(status -> assertThat(status).contains("每分钟最多 1 次请求").contains("排队"));
+            assertThat(requests).hasValue(2);
+        }
+    }
+
+    @Test void aRejectedUsageOptionIsRememberedSoLaterCallsSkipTheDoomedAttempt() throws Exception {
+        List<Map<String, Object>> requests = new CopyOnWriteArrayList<>();
+        try (GatewayFixture server = new GatewayFixture(exchange -> {
+            Map<String, Object> request = json.map(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            requests.add(request);
+            if (request.containsKey("stream_options")) reply(exchange, 400, "application/json", "{\"error\":{\"message\":\"stream_options is not supported\",\"type\":\"invalid_request_error\"}}");
+            else reply(exchange, 200, "text/event-stream", stream("完成", "stop"));
+        })) {
+            var gateway = new CompanyModelGateway();
+            assertThat(gateway.complete(server.settings(), "输出正文", "开始", token -> { }, () -> { })).isEqualTo("完成");
+            assertThat(gateway.complete(server.settings(), "输出正文", "开始", token -> { }, () -> { })).isEqualTo("完成");
+            assertThat(requests).hasSize(3);
+            assertThat(requests.getLast()).doesNotContainKey("stream_options");
+        }
+    }
+
+    private static String chunk(String content) {
+        return "data: {\"id\":\"fixture\",\"created\":1,\"object\":\"chat.completion.chunk\",\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + content + "\"},\"finish_reason\":null}]}\n\n";
+    }
+
     private static String stream(String content, String finishReason) {
         return "data: {\"id\":\"fixture\",\"created\":1,\"object\":\"chat.completion.chunk\",\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + content + "\"},\"finish_reason\":" + (finishReason == null ? "null" : "\"" + finishReason + "\"") + "}]}\n\ndata: [DONE]\n\n";
     }
@@ -222,7 +305,31 @@ class ModelTransportBoundaryTest {
             server.createContext("/v1/chat/completions", handler);
             server.start();
         }
-        ModelSettings settings() { return new ModelSettings("http://127.0.0.1:" + server.getAddress().getPort() + "/v1", "fixture-key", "fixture", 0.2, 20, "1"); }
+        String url() { return "http://127.0.0.1:" + server.getAddress().getPort() + "/v1"; }
+        ModelSettings settings() { return new ModelSettings(url(), "fixture-key", "fixture", 0.2, 20, "1"); }
         @Override public void close() { server.stop(0); executor.shutdownNow(); }
+    }
+
+    /** A bare HTTP/1.1 server for responses the JDK server cannot produce, such as a chunked body cut off mid-stream. */
+    private static final class RawGateway implements AutoCloseable {
+        interface Handler { void handle(java.net.Socket socket) throws Exception; }
+        private final java.net.ServerSocket server = new java.net.ServerSocket(0, 50, java.net.InetAddress.getLoopbackAddress());
+        private final Thread acceptor;
+        RawGateway(Handler handler) throws IOException {
+            acceptor = Thread.ofVirtual().start(() -> {
+                while (!server.isClosed()) {
+                    try (java.net.Socket socket = server.accept()) {
+                        var in = new java.io.BufferedInputStream(socket.getInputStream());
+                        StringBuilder head = new StringBuilder();
+                        while (!head.toString().endsWith("\r\n\r\n")) { int next = in.read(); if (next < 0) break; head.append((char) next); }
+                        var length = java.util.regex.Pattern.compile("(?i)content-length:\\s*(\\d+)").matcher(head);
+                        if (length.find()) in.readNBytes(Integer.parseInt(length.group(1)));
+                        handler.handle(socket);
+                    } catch (Exception closed) { if (server.isClosed()) return; }
+                }
+            });
+        }
+        String url() { return "http://127.0.0.1:" + server.getLocalPort() + "/v1"; }
+        @Override public void close() throws IOException { server.close(); acceptor.interrupt(); }
     }
 }

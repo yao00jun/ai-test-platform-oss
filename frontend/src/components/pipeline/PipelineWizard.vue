@@ -4,7 +4,7 @@ import { allAssets, assetApi } from '../../api/assets'
 import { sourceStatusLabels, type SourceAnalysis } from '../../api/analysis'
 import { ApiError } from '../../api/client'
 import { exchangeApi, type ImportPreview } from '../../api/exchange'
-import { pipelineApi, type PipelineAccepted, type PipelineInput, type PipelineOptions } from '../../api/pipelines'
+import { executeByDefault, pipelineApi, type PipelineAccepted, type PipelineInput, type PipelineOptions } from '../../api/pipelines'
 import type { Asset } from '../../api/types'
 import { beginPreparation, completePreparation, emptyPipelineSource, inputHash, updatePreparation, type PipelinePreparation } from '../../core/pipeline-preparation'
 import { preparePipelineSource } from '../../core/prepare-pipeline-source'
@@ -20,7 +20,7 @@ const emit = defineEmits<{ accepted: [result: PipelineAccepted, projectId: strin
 const requirements = ref<Asset[]>([]), definitions = ref<Asset[]>([]), environments = ref<Asset[]>([]), databases = ref<Asset[]>([]), recordings = ref<Asset[]>([])
 const requirementMode = ref('paste'), apiMode = ref('paste'), requirementName = ref(''), requirementText = ref(''), requirementPath = ref(''), apiText = ref(''), apiFormat = ref('auto')
 const requirementFile = ref<File>(), apiFile = ref<File>(), requirementIds = ref<string[]>([]), apiIds = ref<string[]>([])
-const options = ref<PipelineOptions>({ environmentId: '', databaseSourceIds: [], uiEvidenceIds: [], execute: true })
+const options = ref<PipelineOptions>({ environmentId: '', databaseSourceIds: [], uiEvidenceIds: [], execute: false })
 const draft = ref<PipelinePreparation>(), preview = ref<ImportPreview>()
 const source = ref(emptyPipelineSource()), sourceStatus = ref<SourceAnalysis>()
 const loading = ref(false), busy = ref(false), progress = ref(''), error = ref<unknown>(), catalogError = ref<unknown>()
@@ -32,7 +32,7 @@ watch(() => [visible.value, props.projectId], () => {
   sourceStatus.value = undefined
   requirements.value = []; definitions.value = []; environments.value = []; databases.value = []; recordings.value = []
   requirementName.value = ''; requirementText.value = ''; requirementPath.value = ''; apiText.value = ''; requirementFile.value = undefined; apiFile.value = undefined; apiFormat.value = 'auto'
-  requirementIds.value = []; apiIds.value = []; options.value = { environmentId: '', databaseSourceIds: [], uiEvidenceIds: [], execute: true }
+  requirementIds.value = []; apiIds.value = []; options.value = { environmentId: '', databaseSourceIds: [], uiEvidenceIds: [], execute: false }
   if (!visible.value || !props.projectId) return
   current = scope.begin(props.projectId); restore(); void loadCatalog(current)
 }, { immediate: true })
@@ -58,6 +58,7 @@ async function loadCatalog(token: ScopeToken) {
   else if (project.status === 'rejected') catalogError.value = project.reason
   if (!draft.value?.request && !draft.value?.options) {
     options.value.environmentId = environments.value.length === 1 ? environments.value[0]!.id : ''
+    options.value.execute = executeByDefault(environments.value.find(asset => asset.id === options.value.environmentId))
     options.value.databaseSourceIds = databases.value.filter(asset => !asset.data.environmentId || asset.data.environmentId === options.value.environmentId).map(asset => asset.id)
   }
   loading.value = false

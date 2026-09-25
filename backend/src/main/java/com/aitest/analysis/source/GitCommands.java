@@ -18,14 +18,14 @@ public final class GitCommands {
     public static byte[] run(Path directory, List<String> arguments, byte[] input, int outputLimit, Duration timeout, Runnable checkpoint, Set<Integer> successCodes) {
         checkpoint.run();
         List<String> command = new ArrayList<>(List.of("git", "--no-pager", "--no-optional-locks",
-                "-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=", "-c", "credential.helper=",
+                "-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "credential.helper=",
                 "-c", "init.templateDir=", "-c", "protocol.allow=never", "-c", "protocol.http.allow=always", "-c", "protocol.https.allow=always",
                 "-c", "http.followRedirects=false", "-c", "http.sslVerify=true", "-c", "gc.auto=0", "-c", "maintenance.auto=false"));
         command.addAll(arguments);
         ProcessBuilder builder = new ProcessBuilder(command).directory(directory.toFile());
-        builder.environment().keySet().removeIf(key -> key.toUpperCase(Locale.ROOT).startsWith("GIT_"));
-        builder.environment().putAll(Map.of("GIT_CONFIG_NOSYSTEM", "1", "GIT_CONFIG_GLOBAL", System.getProperty("os.name").startsWith("Windows") ? "NUL" : "/dev/null",
-                "GIT_TERMINAL_PROMPT", "0", "GIT_ASKPASS", "", "SSH_ASKPASS", "", "GIT_LFS_SKIP_SMUDGE", "1", "GIT_OPTIONAL_LOCKS", "0"));
+        // Keep the user's global/system CA bundle, proxy and credential policy. Only
+        // disable interactive prompts and repository-side hooks for this read-only job.
+        builder.environment().putAll(Map.of("GIT_TERMINAL_PROMPT", "0", "GIT_ASKPASS", "", "SSH_ASKPASS", "", "GIT_LFS_SKIP_SMUDGE", "1", "GIT_OPTIONAL_LOCKS", "0"));
         Process process = null;
         try (ExecutorService io = Executors.newVirtualThreadPerTaskExecutor()) {
             process = builder.start();
@@ -42,8 +42,8 @@ public final class GitCommands {
                     if (errors.isDone()) errors.get();
                 }
                 checkpoint.run();
-                if (!successCodes.contains(process.exitValue())) throw new Problem(422, "GIT_READ_FAILED", "Git " + arguments.getFirst() + " 读取失败，请检查仓库、版本及读取权限；私有仓库可先在本地检出");
-                write.get(5, TimeUnit.SECONDS); errors.get(5, TimeUnit.SECONDS);
+                write.get(5, TimeUnit.SECONDS); String stderr = new String(errors.get(5, TimeUnit.SECONDS), StandardCharsets.UTF_8);
+                if (!successCodes.contains(process.exitValue())) throw new Problem(422, "GIT_READ_FAILED", "Git " + arguments.getFirst() + " 读取失败，请检查仓库、版本及读取权限；私有仓库可先在本地检出" + tail(stderr));
                 return output.get(5, TimeUnit.SECONDS);
             } finally {
                 process.descendants().forEach(ProcessHandle::destroyForcibly);
@@ -71,5 +71,10 @@ public final class GitCommands {
             }
             return output.toByteArray();
         }
+    }
+    private static String tail(String stderr) {
+        String safe = stderr == null ? "" : stderr.replaceAll("(?i)(https?://)([^/@\\s]+):([^/@\\s]+)@", "$1***:***@").replaceAll("(?i)(token|password|passwd|secret|authorization)(\\s*[:=]\\s*)[^\\s]+", "$1$2***").replaceAll("\\s+", " ").strip();
+        if (safe.isBlank()) return "";
+        return "；Git 输出：" + (safe.length() > 1200 ? safe.substring(Math.max(0, safe.length() - 1200)) : safe);
     }
 }

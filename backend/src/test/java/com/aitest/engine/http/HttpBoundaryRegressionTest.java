@@ -21,10 +21,13 @@ class HttpBoundaryRegressionTest {
 
     @Test void deadlineAndCancellationCoverAResponseBodyAfterHeadersArrive() throws Exception {
         try (Fixture site = new Fixture()) {
-            CountDownLatch entered = new CountDownLatch(2);
+            CountDownLatch entered = new CountDownLatch(1);
             site.server.createContext("/body", request -> {
+                // Only the cancellation request is awaited: on a cold JVM the 150 ms deadline of the first one can expire before it
+                // even reaches the server, and a count taken after a failed write would never happen at all.
+                if ("await=cancel".equals(request.getRequestURI().getRawQuery())) entered.countDown();
                 try {
-                    request.sendResponseHeaders(200, 0); request.getResponseBody().write('x'); request.getResponseBody().flush(); entered.countDown();
+                    request.sendResponseHeaders(200, 0); request.getResponseBody().write('x'); request.getResponseBody().flush();
                     Thread.sleep(1600); request.getResponseBody().write('y');
                 } catch (Exception disconnected) { } finally { request.close(); }
             });
@@ -32,8 +35,8 @@ class HttpBoundaryRegressionTest {
             assertThat(result.status()).isEqualTo("ERROR"); assertThat(result.error()).contains("超时"); assertThat(result.durationMs()).isLessThan(1000);
             AtomicBoolean cancel = new AtomicBoolean();
             try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
-                Future<?> running = workers.submit(() -> http.execute(Map.of("path", "/body", "timeoutMs", 30000), site.url(), Map.of(), Map.of(), new ExecutionContext(Map.of(), () -> { if (cancel.get()) throw new CancellationException(); })));
-                assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue(); cancel.set(true);
+                Future<?> running = workers.submit(() -> http.execute(Map.of("path", "/body?await=cancel", "timeoutMs", 30000), site.url(), Map.of(), Map.of(), new ExecutionContext(Map.of(), () -> { if (cancel.get()) throw new CancellationException(); })));
+                assertThat(entered.await(5, TimeUnit.SECONDS)).as("the second request reached the server").isTrue(); cancel.set(true);
                 assertThatThrownBy(() -> running.get(800, TimeUnit.MILLISECONDS)).isInstanceOf(ExecutionException.class).hasCauseInstanceOf(CancellationException.class);
             }
         }
@@ -44,7 +47,7 @@ class HttpBoundaryRegressionTest {
             site.server.createContext("/expired", request -> site.reply(request, 401, "{\"error\":\"expired\"}"));
             var result = http.execute(Map.of("path", "/expired", "extractors", List.of(Map.of("variable", "id", "jsonpath", "$.id"))), site.url(), Map.of(), Map.of(), new ExecutionContext(Map.of(), () -> {}));
             assertThat(result.actual()).containsEntry("status", 401).containsEntry("body", "{\"error\":\"expired\"}");
-            assertThat(result.exports()).isEmpty(); assertThat(result.status()).isEqualTo("ERROR");
+            assertThat(result.exports()).isEmpty(); assertThat(result.status()).isEqualTo("FAILED");
         }
     }
 
@@ -74,6 +77,31 @@ class HttpBoundaryRegressionTest {
                 assertThatThrownBy(() -> auth.token(env, config, context, null)).isInstanceOfSatisfying(Problem.class, problem -> assertThat(problem.code()).isEqualTo("AUTH_FAILED"));
             }
             assertThat(auth.token(env, config, new ExecutionContext(Map.of("username", "valid-user"), () -> {}), null).value()).isEqualTo("valid-token");
+        }
+    }
+
+    @Test void customTokenHeadersCarryTheBareTokenGetLoginsUseTheQueryAndFailuresSayWhy() throws Exception {
+        try (Fixture site = new Fixture()) {
+            site.server.createContext("/login", request -> {
+                request.getRequestBody().readAllBytes();
+                if (request.getRequestMethod().equals("GET") && "u=tester".equals(request.getRequestURI().getRawQuery())) site.reply(request, 200, "{\"code\":0,\"data\":{\"token\":\"t-1\"}}");
+                else site.reply(request, 401, "{\"msg\":\"账号不存在\"}");
+            });
+            var auth = new GlobalAuthService(http, variables, json);
+            Asset env = asset("env", AssetType.ENVIRONMENT, Map.of("baseUrl", site.url()));
+            Map<String, Object> login = Map.of("loginUrl", "/login", "loginMethod", "GET", "loginPayload", Map.of("u", "tester"), "tokenJsonPath", "$.data.token");
+            var custom = new java.util.LinkedHashMap<>(login); custom.put("headerKey", "X-Access-Token"); custom.put("headerPrefix", "");
+            var bare = auth.token(env, asset("custom", AssetType.AUTH_CONFIG, custom), new ExecutionContext(Map.of(), () -> {}), null);
+            assertThat(bare.header()).isEqualTo("X-Access-Token");
+            assertThat(bare.headerValue()).isEqualTo("t-1");
+            assertThat(auth.token(env, asset("standard", AssetType.AUTH_CONFIG, login), new ExecutionContext(Map.of(), () -> {}), null).headerValue()).isEqualTo("Bearer t-1");
+
+            var rejected = new java.util.LinkedHashMap<>(login); rejected.put("loginPayload", Map.of("u", "nobody"));
+            assertThatThrownBy(() -> auth.token(env, asset("rejected", AssetType.AUTH_CONFIG, rejected), new ExecutionContext(Map.of(), () -> {}), null))
+                    .isInstanceOfSatisfying(Problem.class, problem -> assertThat(problem.getMessage()).contains("HTTP 401").contains("账号不存在"));
+            var wrongPath = new java.util.LinkedHashMap<>(login); wrongPath.put("tokenJsonPath", "$.token");
+            assertThatThrownBy(() -> auth.token(env, asset("wrong-path", AssetType.AUTH_CONFIG, wrongPath), new ExecutionContext(Map.of(), () -> {}), null))
+                    .isInstanceOfSatisfying(Problem.class, problem -> assertThat(problem.getMessage()).contains("$.token").contains("data").as("the response carries the token").doesNotContain("t-1"));
         }
     }
 

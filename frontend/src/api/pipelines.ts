@@ -6,6 +6,10 @@ export type PipelineStage = keyof typeof stageNames
 export const pipelineLabels: Record<string, string> = { QUEUED: '排队中', RUNNING: '运行中', COMPLETED: '已完成', COMPLETED_WITH_GAPS: '已完成 · 有待补充项', FAILED: '失败', CANCELLED: '已取消', INTERRUPTED: '已中断', BLOCKED: '待补充', SKIPPED: '已跳过', WAITING_RUN: '等待测试执行', WAITING_DIAGNOSIS: '等待失败诊断' }
 export const activePipelineStates = new Set(['QUEUED', 'RUNNING'])
 export interface PipelineOptions { environmentId: string; databaseSourceIds: string[]; uiEvidenceIds: string[]; execute: boolean; sourceSnapshotId?: string }
+/** Follows the environment's own "auto-run generated tests" switch; production environments never auto-run generated tests. */
+export function executeByDefault(environment?: { data: Record<string, unknown> }): boolean {
+  return !!environment && environment.data.autoRunGenerated === true && environment.data.purpose !== 'PRODUCTION'
+}
 export interface PipelineInput extends PipelineOptions { projectId: string; requirementIds: string[]; apiDefinitionIds: string[]; idempotencyKey: string }
 export interface PipelineResume extends PipelineOptions { projectId: string; stage: PipelineStage; apiDefinitionIds: string[]; idempotencyKey: string }
 export interface PipelineAccepted { pipelineId: string; jobId: string; activeJobId?: string; conversationId: string; status: string }

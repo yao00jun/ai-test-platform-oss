@@ -11,8 +11,10 @@ final class RecorderSemantics {
     private record PageFrame(String page, String frame) { }
     private record PendingPopup(String page, int position, int line) { }
     private static final class UnsupportedSyntax extends RuntimeException { UnsupportedSyntax(String text) { super(text); } }
+    private static final class NonFatalSyntax extends RuntimeException { NonFatalSyntax(String text) { super(text); } }
     private final String source;
     private final List<ExchangeIssue> errors;
+    private final List<ExchangeIssue> warnings;
     private final Map<String, String> pages = new LinkedHashMap<>(Map.of("page", "main"));
     private final Map<String, String> resources = new LinkedHashMap<>();
     private final Map<String, Expr> bindings = new LinkedHashMap<>();
@@ -26,8 +28,8 @@ final class RecorderSemantics {
     private int wrappers;
     private boolean pageCreated;
 
-    RecorderSemantics(String source, List<ExchangeIssue> errors) {
-        this.source = source; this.errors = errors; this.name = ExchangeParserRegistry.stripExtension(source);
+    RecorderSemantics(String source, List<ExchangeIssue> errors, List<ExchangeIssue> warnings) {
+        this.source = source; this.errors = errors; this.warnings = warnings; this.name = ExchangeParserRegistry.stripExtension(source);
         resources.put("chromium", "CHROMIUM"); resources.put("firefox", "FIREFOX"); resources.put("webkit", "WEBKIT");
     }
     ParsedExchange convert(List<Statement> statements, AssetType type, String format) {
@@ -41,11 +43,12 @@ final class RecorderSemantics {
             Map<String, Object> data = steps.get(index);
             nodes.add(new ExchangeNode("step_" + (index + 1), AssetType.UI_STEP, parent, "L" + lines.get(index) + " · " + data.get("action"), index, data, Map.of()));
         }
-        return new ParsedExchange(new ExchangeBundle(ExchangeBundle.VERSION, Map.of("sourceFormat", format, "sourceLines", lines), nodes, Map.of(), List.of()), errors);
+        return new ParsedExchange(new ExchangeBundle(ExchangeBundle.VERSION, Map.of("sourceFormat", format, "sourceLines", lines), nodes, Map.of(), warnings), errors);
     }
     private void consume(List<Statement> statements) {
         for (Statement statement : statements) {
             try { statement(statement); }
+            catch (NonFatalSyntax warning) { warnings.add(new ExchangeIssue(source, statement.line(), "$script", warning.getMessage())); }
             catch (UnsupportedSyntax failure) { issue(statement.line(), "$script", failure.getMessage()); }
             catch (IllegalArgumentException failure) { issue(statement.line(), "$script", "录制参数的类型或取值无效"); }
         }
@@ -205,6 +208,8 @@ final class RecorderSemantics {
     private Located locate(Expr expression) {
         if (expression instanceof Name name && locators.containsKey(name.value())) return locators.get(name.value());
         if (!(expression instanceof Call call)) throw unsupported("定位器必须为支持的 Playwright 定位调用");
+        if (Set.of("first", "last", "nth").contains(call.method()) && call.receiver() instanceof Call receiver && isLocator(receiver))
+            throw new NonFatalSyntax("无法无损转换 first/last/nth 定位器；已跳过此行操作，其他录制步骤仍可导入");
         PageFrame root = pageFrame(call.receiver()); requireArguments(call, 1);
         Map<String, Object> options = argumentsOptions(call, 1);
         String kind = switch (call.method()) {

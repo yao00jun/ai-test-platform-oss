@@ -60,9 +60,13 @@ public final class FailureEvidenceReader {
         if (step != null) { evidence.put("stepId", step.get("assetId")); evidence.put("stepName", step.get("name")); evidence.put("stepResultId", step.get("id")); }
         return new Failure(run, itemId, key, caseId, item.get("name").toString(), hash(json.write(signature)), evidence);
     }
-    private String normalize(String error) {
+    /** Run-specific values (ids, times, generated numbers) are masked so a recurring failure keeps one fingerprint and is diagnosed once. */
+    static String normalize(String error) {
         return error.replaceAll("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "{id}")
+                .replaceAll("\\d{4}-\\d{2}-\\d{2}(?:[T ]\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:?\\d{2})?)?", "{time}")
+                .replaceAll("\\b\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?\\b", "{time}")
                 .replaceAll("(?i)\\b[0-9a-f]{24,}\\b", "{id}").replaceAll("\\b\\d+(?:\\.\\d+)?\\s*(?:ms|milliseconds|秒)\\b", "{duration}")
+                .replaceAll("\\d{6,}", "{n}")
                 .replaceAll("\\s+", " ").strip();
     }
     private String hash(String value) {

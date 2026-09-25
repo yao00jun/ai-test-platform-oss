@@ -53,18 +53,19 @@ public final class ApiHealingService implements JobHandler {
         evidence.forEach(item -> { affected.addAll(item.affectedAssetIds()); if (item.current() != null) evidenceVersions.put(item.current().id(), item.current().version()); });
         Map<String, Asset> targets = new LinkedHashMap<>();
         redactor.assets(repository.all(job.projectId(), null, null)).stream().filter(asset -> affected.contains(asset.id()) && TYPES.contains(asset.type())).forEach(asset -> targets.put(asset.id(), asset));
-        Map<String, Object> context = Map.of("instruction", request.instruction(), "diffId", diff.id(), "apiEvidence", evidence, "manifest", List.copyOf(targets.values()), "history", conversations.messages(job.projectId(), request.conversationId()), "schemas", drafts.schemas(TYPES));
+        // Each accepted diff item carries whole OpenAPI documents (before, candidate, current); only the changed operation matters here.
+        Map<String, Object> context = Map.of("instruction", request.instruction(), "diffId", diff.id(), "apiEvidence", ModelContextBudget.slim(json.tree(json.write(evidence))), "manifest", ModelContextBudget.assets(targets.values(), 150_000, json),
+                "history", ModelContextBudget.history(conversations.messages(job.projectId(), request.conversationId())), "schemas", drafts.schemas(TYPES));
         conversations.recordUser(request.conversationId(), job.id(), request.instruction(), null, context);
         String raw = "", stamp = "unconfigured";
         try {
             if (targets.values().stream().noneMatch(asset -> !asset.confirmed())) throw new Problem(422, "HEALING_SCOPE_EMPTY", "当前没有需要修复的未保护关联资产");
             ModelSettings model = settings.current(); stamp = model.modelName() + ":" + model.version();
             job.progress(10, "正在依据已采纳接口和最新人工内容生成定向修复预览");
-            var draft = drafts.generate(model, job, "pipeline_feedback", context, null, null, CONTRACT, true); raw = draft.raw();
-            for (var proposal : draft.changes()) {
+            var draft = drafts.generate(model, job, "pipeline_feedback", context, null, null, CONTRACT, true, proposed -> { for (var proposal : proposed) {
                 Asset target = targets.get(proposal.targetId());
-                if (!"MODIFY".equals(proposal.operation()) || target == null || target.type() != proposal.targetType()) throw Problem.invalid("接口修复只能修改本轮受影响的已有资产");
-                if (target.confirmed()) throw new Problem(409, "PROTECTED_ASSET", "已确认人工资产保持原状");
+                if (!"MODIFY".equals(proposal.operation()) || target == null || target.type() != proposal.targetType()) throw Problem.invalid("「" + proposal.name() + "」：接口修复只能以 MODIFY 修改 manifest 中本轮受影响的已有资产");
+                if (target.confirmed()) throw Problem.invalid("「" + proposal.name() + "」已被人工确认保护，保持原状，请去掉这一项");
                 AssetService.requireVersion(target, proposal.baseVersion());
                 if (proposal.parentId() != null && !Objects.equals(proposal.parentId(), target.parentId()) || proposal.localKey() != null) throw Problem.invalid("接口修复不能移动资产或指定新增身份");
                 if (proposal.data() != null) for (String field : AssetReferences.FIELDS) if (proposal.data().containsKey(field) && !Objects.equals(proposal.data().get(field), target.data().get(field))) throw Problem.invalid("接口修复不能改变现有资产引用");
@@ -75,7 +76,7 @@ public final class ApiHealingService implements JobHandler {
                 withDefinitions.add(candidate);
                 Asset safeCandidate = redactor.assets(withDefinitions).getLast();
                 if (!safeCandidate.data().equals(candidate.data())) throw Problem.invalid("AI 修复包含未经提供的凭证值，请使用已有掩码或变量引用");
-            }
+            } return proposed; }); raw = draft.raw();
             String modelStamp = stamp;
             return job.completeAtomically(() -> {
                 repository.lockProject(job.projectId());

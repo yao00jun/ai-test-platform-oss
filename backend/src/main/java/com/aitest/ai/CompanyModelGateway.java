@@ -10,9 +10,11 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import com.openai.client.OpenAIClientImpl;
@@ -22,17 +24,34 @@ import org.springframework.ai.openai.http.okhttp.SpringAiOpenAiHttpClient;
 /** Lazy, task-scoped Spring AI adapter for standard company OpenAI-compatible gateways. */
 @Component
 public class CompanyModelGateway {
+    /**
+     * The pump owns each call's time budget. Transport limits (OkHttp call/read/write, Spring AI's per-request timeout)
+     * sit this far above it, so they only catch a wedged socket and never race the pump into reporting a timeout as a
+     * dropped connection.
+     */
+    static final int TRANSPORT_MARGIN_SECONDS = 30;
+    private final ModelRequestLimiter limiter;
+    /** Keyed by gateway, model and settings version, so saving the settings starts from a clean slate. */
+    private final Map<String, ModelResponsePump.Compatibility> compatibility = new ConcurrentHashMap<>();
+    public CompanyModelGateway() { this(new ModelRequestLimiter()); }
+    CompanyModelGateway(ModelRequestLimiter limiter) { this.limiter = limiter; }
+
     public String complete(ModelSettings settings, String system, String user, Consumer<String> onToken, Runnable checkpoint) {
         return complete(settings, system, user, onToken, checkpoint, new ModelCallTelemetry());
     }
     public String complete(ModelSettings settings, String system, String user, Consumer<String> onToken, Runnable checkpoint, ModelCallTelemetry telemetry) {
+        return complete(settings, system, user, onToken, checkpoint, telemetry, status -> { });
+    }
+    /** {@code onStatus} hears plain-language waits (e.g. queueing for the provider's request cap) that produce no tokens. */
+    public String complete(ModelSettings settings, String system, String user, Consumer<String> onToken, Runnable checkpoint, ModelCallTelemetry telemetry, Consumer<String> onStatus) {
+        Duration transportTimeout = Duration.ofSeconds(settings.timeoutSeconds() + TRANSPORT_MARGIN_SECONDS);
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(ModelSettings.normalizeBaseUrl(settings.baseUrl())).apiKey(settings.apiKey())
                 .model(settings.modelName()).temperature(settings.temperature())
-                .timeout(Duration.ofSeconds(settings.timeoutSeconds())).maxRetries(0).streamUsage(true).build();
+                .timeout(transportTimeout).maxRetries(0).streamUsage(true).build();
         Set<okhttp3.Call> requests = ConcurrentHashMap.newKeySet();
         AtomicBoolean includeUsage = new AtomicBoolean(true);
-        SpringAiOpenAiHttpClient.Builder transportBuilder = SpringAiOpenAiHttpClient.builder().timeout(Duration.ofSeconds(settings.timeoutSeconds()));
+        SpringAiOpenAiHttpClient.Builder transportBuilder = SpringAiOpenAiHttpClient.builder().timeout(transportTimeout);
         if (settings.trustSelfSigned()) transportBuilder.sslSocketFactory(ModelTls.trustAllSocketFactory()).trustManager(ModelTls.TRUST_ALL).hostnameVerifier(ModelTls.ANY_HOST);
         SpringAiOpenAiHttpClient transport = transportBuilder
                 .interceptor(chain -> {
@@ -49,11 +68,18 @@ public class CompanyModelGateway {
         };
         OpenAIClientImpl client = new OpenAIClientImpl(ClientOptions.builder().httpClient(transport)
                 .baseUrl(options.getBaseUrl()).apiKey(settings.apiKey()).maxRetries(0)
-                .timeout(Duration.ofSeconds(settings.timeoutSeconds())).build());
+                .timeout(transportTimeout).build());
         OpenAiChatModel model = OpenAiChatModel.builder().openAiClient(client).openAiClientAsync(client.async()).options(options).build();
+        ModelResponsePump.Admission admission = () -> {
+            long waited = limiter.acquire(settings.requestsPerMinute(), checkpoint,
+                    pause -> onStatus.accept("模型服务限制每分钟最多 " + settings.requestsPerMinute() + " 次请求，正在排队，约 " + Math.max(1, TimeUnit.NANOSECONDS.toSeconds(pause)) + " 秒后发出"));
+            if (waited > 0) onStatus.accept("已排到请求名额，正在调用模型");
+            return waited;
+        };
         try {
             return ModelResponsePump.complete(model, new Prompt(List.of(new SystemMessage(system), new UserMessage(user)), options),
-                    onToken, checkpoint, abort, Duration.ofSeconds(settings.timeoutSeconds()), telemetry, () -> includeUsage.set(false), settings.trustSelfSigned());
+                    onToken, checkpoint, abort, Duration.ofSeconds(settings.timeoutSeconds()), telemetry, () -> includeUsage.set(false), settings.trustSelfSigned(), admission,
+                    compatibility.computeIfAbsent(options.getBaseUrl() + "\n" + settings.modelName() + "\n" + settings.version(), key -> new ModelResponsePump.Compatibility()));
         } finally {
             abort.run();
             client.close();
@@ -61,8 +87,11 @@ public class CompanyModelGateway {
     }
     /** Lists the model identifiers the provider advertises on the OpenAI-compatible GET {baseUrl}/models endpoint. */
     public List<String> listModels(String baseUrl, String apiKey, int timeoutSeconds) { return listModels(baseUrl, apiKey, timeoutSeconds, false); }
-    public List<String> listModels(String baseUrl, String apiKey, int timeoutSeconds, boolean trustSelfSigned) {
+    public List<String> listModels(String baseUrl, String apiKey, int timeoutSeconds, boolean trustSelfSigned) { return listModels(baseUrl, apiKey, timeoutSeconds, trustSelfSigned, 0); }
+    public List<String> listModels(String baseUrl, String apiKey, int timeoutSeconds, boolean trustSelfSigned, int requestsPerMinute) {
         String url = ModelSettings.normalizeBaseUrl(baseUrl) + "/models";
+        // Providers that cap requests per minute usually count the listing too.
+        limiter.acquire(requestsPerMinute, () -> { }, pause -> { });
         okhttp3.OkHttpClient.Builder builder = new okhttp3.OkHttpClient.Builder().connectTimeout(Duration.ofSeconds(timeoutSeconds))
                 .readTimeout(Duration.ofSeconds(timeoutSeconds)).callTimeout(Duration.ofSeconds(timeoutSeconds));
         if (trustSelfSigned) builder.sslSocketFactory(ModelTls.trustAllSocketFactory(), ModelTls.TRUST_ALL).hostnameVerifier(ModelTls.ANY_HOST);
@@ -81,6 +110,8 @@ public class CompanyModelGateway {
             org.slf4j.LoggerFactory.getLogger(CompanyModelGateway.class).warn("Model listing failed for {}: {}", url, root.toString());
             String detail = root.getClass().getSimpleName() + (root.getMessage() == null ? "" : ": " + root.getMessage());
             if (root instanceof javax.net.ssl.SSLException || failure instanceof javax.net.ssl.SSLException) throw new com.aitest.common.Problem(502, "MODEL_REQUEST_FAILED", "获取模型列表时 TLS 握手失败（" + detail + "）。" + ModelResponsePump.tlsHint(trustSelfSigned));
+            for (Throwable current = failure; current != null; current = current.getCause())
+                if (current instanceof java.io.InterruptedIOException) throw new com.aitest.common.Problem(504, "MODEL_REQUEST_TIMEOUT", "获取模型列表超时（" + timeoutSeconds + " 秒内没有响应），请检查服务地址、代理和网络");
             throw new com.aitest.common.Problem(502, "MODEL_REQUEST_FAILED", "获取模型列表失败（" + detail + "），请检查服务地址、代理和网络");
         } finally {
             client.dispatcher().executorService().shutdown(); client.connectionPool().evictAll();

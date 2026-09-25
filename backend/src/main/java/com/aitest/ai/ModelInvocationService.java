@@ -13,6 +13,7 @@ import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** A logical gateway invocation may contain bounded HTTP compatibility/rate-limit attempts. */
@@ -35,9 +36,15 @@ public class ModelInvocationService {
                 id, job.projectId(), job.id(), model.modelName(), model.version(), template, prompts.version(template), purpose, Timestamp.from(at), price.enabled() ? Long.valueOf(price.version()) : null, price.enabled() ? price.currency() : null, price.enabled() ? price.inputPerMillion() : null, price.enabled() ? price.outputPerMillion() : null));
         var telemetry = new ModelCallTelemetry(); String status = "SUCCEEDED", errorCode = null;
         RuntimeException original = null;
-        try { return gateway.complete(model, system, user, onToken, job::checkpoint, telemetry); }
+        TokenSlices tokens = new TokenSlices(onToken);
+        try {
+            String result = gateway.complete(model, system, user, tokens, throttled(job::checkpoint), telemetry, job::status);
+            tokens.flush();
+            return result;
+        }
         catch (RuntimeException failure) {
             original = failure;
+            try { tokens.flush(); } catch (RuntimeException ignored) { /* A cancelled job no longer accepts events. */ }
             status = failure instanceof CancellationException ? "CANCELLED" : failure instanceof JobService.LeaseLostException ? "INTERRUPTED" : "FAILED";
             errorCode = failure instanceof Problem problem ? problem.code() : status;
             throw failure;
@@ -51,6 +58,34 @@ public class ModelInvocationService {
                         finalStatus, finalError, Timestamp.from(Instant.now()), (System.nanoTime() - started) / 1_000_000, telemetry.httpAttempts(), telemetry.usageReported(), telemetry.promptTokens(), telemetry.completionTokens(), telemetry.totalTokens(), telemetry.responseModel(), cost, id));
             } catch (RuntimeException recordingFailure) { if (original != null) original.addSuppressed(recordingFailure); else throw recordingFailure; }
             finally { if (interrupted) Thread.currentThread().interrupt(); }
+        }
+    }
+
+    /** The pump checks between tokens and every 100 ms; reading the job row at most every 200 ms keeps cancellation prompt without a query per token. */
+    static Runnable throttled(Runnable checkpoint) {
+        long[] last = {System.nanoTime() - TimeUnit.SECONDS.toNanos(1)};
+        return () -> {
+            long now = System.nanoTime();
+            if (now - last[0] < TimeUnit.MILLISECONDS.toNanos(200)) return;
+            checkpoint.run(); last[0] = now;
+        };
+    }
+
+    /** Streams to the job in quarter-second slices: one event row per slice instead of one per token. */
+    static final class TokenSlices implements Consumer<String> {
+        private final Consumer<String> target;
+        private final StringBuilder pending = new StringBuilder();
+        private long flushedAt = System.nanoTime();
+        TokenSlices(Consumer<String> target) { this.target = target; }
+        @Override public void accept(String token) {
+            pending.append(token);
+            if (pending.length() >= 4000 || System.nanoTime() - flushedAt >= TimeUnit.MILLISECONDS.toNanos(250)) flush();
+        }
+        void flush() {
+            flushedAt = System.nanoTime();
+            if (pending.isEmpty()) return;
+            String slice = pending.toString(); pending.setLength(0);
+            target.accept(slice);
         }
     }
 }

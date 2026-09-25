@@ -49,8 +49,8 @@ type Page<T> = {items: T[]; total: number};
 
 ## AI 和任务
 
-- `GET /settings/model` → `{baseUrl,modelName,hasApiKey,temperature,timeoutSeconds,trustSelfSigned}`。
-- `PUT /settings/model` `{baseUrl,modelName,apiKey?,temperature?,timeoutSeconds?,trustSelfSigned?}` → 同上；空 apiKey 保留现有密钥。`trustSelfSigned=true` 时模型调用跳过证书链与主机名校验，只用于公司内网自签名/私有 CA 的 https 网关。
+- `GET /settings/model` → `{baseUrl,modelName,hasApiKey,temperature,timeoutSeconds,requestsPerMinute,trustSelfSigned}`。`timeoutSeconds` 为单次模型调用总预算（5–3600 秒），`requestsPerMinute=0` 表示不额外限制，最大 10000。
+- `PUT /settings/model` `{baseUrl,modelName,apiKey?,temperature?,timeoutSeconds?,requestsPerMinute?,trustSelfSigned?}` → 同上；省略或空 apiKey 保留现有密钥，未填写的可选设置保留原值。`trustSelfSigned=true` 时模型调用跳过证书链与主机名校验，只用于公司内网自签名/私有 CA 的 https 网关。
 - `POST /settings/model/test` → `{ok,message}`，真实请求，不写资产。
 - 流水线 S3 每次模型调用只带 `aitest.pipeline.api-batch-size`（默认 8，环境变量 `AI_TEST_API_BATCH_SIZE`）个接口定义，且只发送该操作、pathItem 与其引用的 components，不发送整份 OpenAPI 文档；existingAssets 只含既有接口用例/场景摘要与功能用例名称。一批最多 3 轮生成，每轮只补仍未覆盖的接口，已通过的用例立即保存。各阶段的 `sourceEvidence` 按用途裁剪：S1–S3 只带 backend，S4 带 backend+database，S5 带 frontend+backend 与静态分析告警；FORMAT_REPAIR 只回传契约相关字段与无效输出，不重复发送资料。
 - `POST /settings/model/models` `{baseUrl,apiKey?,trustSelfSigned?}` → `{models:[...]}`，向服务商的 OpenAI 兼容 `GET {baseUrl}/models` 取模型列表，用于填写模型名称时下拉选择；空 apiKey 使用已保存密钥，服务商不提供该接口时返回 502 `MODEL_LIST_UNSUPPORTED`，此时手填模型名称即可。

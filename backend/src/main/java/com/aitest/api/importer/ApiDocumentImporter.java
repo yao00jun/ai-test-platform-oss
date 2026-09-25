@@ -70,9 +70,8 @@ public class ApiDocumentImporter {
             for (String message : result.getMessages()) {
                 String field = message.replaceFirst("^(attribute|components|paths)\\s*", "").split("\\s")[0];
                 if (!field.matches("[A-Za-z0-9_./{}$~-]{1,180}")) field = "$document";
-                errors.add(new ExchangeIssue(source, 1, field, "Swagger/OpenAPI 规范校验失败：字段缺失、格式错误或不受支持"));
+                warnings.add(new ExchangeIssue(source, 1, field, "Swagger/OpenAPI 解析器提示此字段可能不完整或不受支持；已保留可识别的接口定义，请核对导入结果"));
             }
-            return;
         }
         Map<String, Object> info = map(document.get("info"), source, 1, "info");
         String docVersion = string(info.get("version"), source, 1, "info.version");
@@ -262,7 +261,14 @@ public class ApiDocumentImporter {
         }
     }
     private static void rejectScripts(Map<String, Object> object, String source, int row) {
-        if (object.get("event") instanceof List<?> events && !events.isEmpty()) throw error(source, row, "event", "Postman 前置/测试脚本不能安全映射；请先移除脚本并显式配置变量/断言");
+        if (object.get("event") instanceof List<?> events && events.stream().anyMatch(ApiDocumentImporter::hasScriptCode))
+            throw error(source, row, "event", "Postman 前置/测试脚本不能安全映射；请先移除脚本并显式配置变量/断言");
+    }
+    private static boolean hasScriptCode(Object value) {
+        if (!(value instanceof Map<?, ?> event) || !(event.get("script") instanceof Map<?, ?> script)) return false;
+        Object exec = script.get("exec");
+        if (exec instanceof String text) return !text.isBlank();
+        return exec instanceof List<?> lines && lines.stream().anyMatch(line -> line instanceof String text && !text.isBlank());
     }
     private static void applyPostmanAuth(Object input, Map<String, Object> headers, Map<String, Object> query, String source, int row) {
         if (input == null) return;

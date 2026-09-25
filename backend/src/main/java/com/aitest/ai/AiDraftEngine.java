@@ -11,6 +11,7 @@ import java.util.*;
 
 @Service
 public final class AiDraftEngine {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AiDraftEngine.class);
     /** Boundary violations (touching assets outside the batch) fail at once; only structural omissions get a repair round. */
     public static final String OUT_OF_SCOPE = "GENERATION_OUT_OF_SCOPE";
     private final ModelInvocationService gateway;
@@ -30,22 +31,24 @@ public final class AiDraftEngine {
     public Draft generate(ModelSettings model, JobContext job, String template, Map<String, Object> context, AssetType requestedType, String parentId, String contract, boolean allowEmpty, java.util.function.UnaryOperator<List<AiChangeSetService.Proposal>> normalize) {
         Map<String, String> variables = new LinkedHashMap<>(); Values.map(context.get("templateVariables")).forEach((key, value) -> variables.put(key, Objects.toString(value, "")));
         String system = prompts.render(template, variables) + (contract.isBlank() ? "" : "\n\n# 当前平台调用协议（输出结构以此为准）\n" + contract);
-        String raw = gateway.complete(model, job, template, "INITIAL", system, json.write(context), token -> job.event("token", Map.of("token", token, "content", token)));
+        String raw = gateway.complete(model, job, template, "INITIAL", system, json.write(context), token -> job.event("token", Map.of("token", token)));
         for (int attempt = 0; ; attempt++) {
             try { return new Draft(raw, normalize.apply(requestedType == AssetType.FUNCTIONAL_CASE && template.equals("functional_case_generation") ? markdown(raw, parentId) : jsonDraft(raw, allowEmpty))); }
             catch (Problem formatError) {
-                if (formatError.code().equals("GENERATION_BLOCKED")) throw formatError;
+                // Only a validation message is something the model can act on; conflicts and outages are not "repaired".
+                if (formatError.status() != 422 || formatError.code().equals("GENERATION_BLOCKED")) throw formatError;
                 if (formatError.code().equals(OUT_OF_SCOPE)) throw new Problem(422, OUT_OF_SCOPE, formatError.getMessage(), Map.of("rawOutput", raw));
                 if (attempt != 0) throw new Problem(422, "AI_OUTPUT_INVALID", formatError.getMessage(), Map.of("rawOutput", raw));
-                job.event("progress", Map.of("message", "输出格式需要修复，正在进行一次有限重试"));
-                raw = gateway.complete(model, job, template, "FORMAT_REPAIR", system, json.write(Map.of("context", repairContext(context), "invalidOutput", raw, "validationError", formatError.getMessage(), "instruction", "仅修复输出结构，不改变作用范围和业务事实；原始资料已省略，以 invalidOutput 中的内容为准")), token -> job.event("token", Map.of("token", token, "content", token)));
+                LOG.info("Draft from {} failed validation, asking for one repair: {}", template, formatError.getMessage());
+                job.status("输出格式需要修复，正在进行一次有限重试");
+                raw = gateway.complete(model, job, template, "FORMAT_REPAIR", system, json.write(Map.of("context", repairContext(context), "invalidOutput", raw, "validationError", formatError.getMessage(), "instruction", "仅修复输出结构，不改变作用范围和业务事实；原始资料已省略，以 invalidOutput 中的内容为准")), token -> job.event("token", Map.of("token", token)));
             }
         }
     }
     /** A structural repair only needs the contract-shaped parts of the context; the bulky evidence was already used. */
     public static Map<String, Object> repairContext(Map<String, Object> context) {
         Map<String, Object> lean = new LinkedHashMap<>(context);
-        for (String heavy : List.of("sourceEvidence", "existingAssets", "sources", "databaseSchemas", "evidence", "recordings", "runtimeEvidence", "chunk")) lean.remove(heavy);
+        for (String heavy : List.of("sourceEvidence", "existingAssets", "sources", "databaseSchemas", "evidence", "recordings", "runtimeEvidence", "chunk", "apiIndex")) lean.remove(heavy);
         return lean;
     }
     public List<Map<String, Object>> schemas(Set<AssetType> types) {
@@ -65,6 +68,9 @@ public final class AiDraftEngine {
             Map<String, Object> data = new LinkedHashMap<>(); data.put("precondition", item.getPrerequisite()); data.put("remark", item.getDescription());
             var priority = java.util.regex.Pattern.compile("\\bP[0-3]\\b").matcher(Objects.toString(item.getDescription(), ""));
             if (priority.find()) data.put("priority", priority.group());
+            // The remark line carries "用例类型: BOUNDARY"; without it the case keeps the FUNCTIONAL default.
+            var caseType = java.util.regex.Pattern.compile("\\b(FUNCTIONAL|BOUNDARY|NEGATIVE|SECURITY|PERFORMANCE)\\b").matcher(Objects.toString(item.getDescription(), ""));
+            if (caseType.find()) data.put("caseType", caseType.group(1));
             changes.add(new AiChangeSetService.Proposal("ADD", AssetType.FUNCTIONAL_CASE, null, parentId, key, null, item.getName(), data));
             int stepIndex = 0;
             for (var step : item.getSteps()) changes.add(new AiChangeSetService.Proposal("ADD", AssetType.FUNCTIONAL_STEP, null, "@" + key, key + "_step_" + stepIndex++, null, "步骤 " + stepIndex, Map.of("step", Objects.toString(step.getDesc(), ""), "expected", Objects.toString(step.getResult(), ""))));

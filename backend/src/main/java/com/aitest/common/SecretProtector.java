@@ -20,27 +20,41 @@ import java.util.Base64;
 public final class SecretProtector {
     public static final String MASK = "••••••••";
     private final SecretKeySpec key;
+    private final Path keyFile;
+    private final boolean generatedThisBoot;
     private final SecureRandom random = new SecureRandom();
 
     public SecretProtector(@Value("${aitest.storage-root}") String storageRoot) throws IOException {
         String configured = System.getenv("AI_TEST_MASTER_KEY");
         byte[] material;
+        Path resolvedKeyFile = null;
+        boolean generated = false;
         if (configured != null && !configured.isBlank()) material = Base64.getDecoder().decode(configured);
         else {
             Path root = Path.of(storageRoot).toAbsolutePath().normalize();
             Files.createDirectories(root);
             Path file = root.resolve(".master-key");
             if (!Files.exists(file)) {
-                byte[] generated = new byte[32]; random.nextBytes(generated);
-                try { Files.write(file, generated, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE); }
-                catch (FileAlreadyExistsException ignored) { /* Another startup created the same key first. */ }
+                byte[] generatedMaterial = new byte[32]; random.nextBytes(generatedMaterial);
+                try {
+                    Files.write(file, generatedMaterial, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                    generated = true;
+                } catch (FileAlreadyExistsException ignored) { /* Another startup created the same key first. */ }
+                Arrays.fill(generatedMaterial, (byte) 0);
             }
             material = Files.readAllBytes(file);
+            resolvedKeyFile = file;
         }
         if (material.length != 32) throw new IllegalStateException("AI_TEST_MASTER_KEY must contain 32 bytes in Base64");
         key = new SecretKeySpec(material, "AES");
+        keyFile = resolvedKeyFile;
+        generatedThisBoot = generated;
         Arrays.fill(material, (byte) 0);
     }
+
+    public boolean generatedThisBoot() { return generatedThisBoot; }
+
+    public Path keyFile() { return keyFile; }
     public String encrypt(String plaintext) {
         if (plaintext == null || plaintext.isEmpty()) return "";
         try {

@@ -33,12 +33,12 @@ public final class SqlStepExecutor {
             boolean allowWrite = environmentAllowsWrite && !Values.bool(source.data(), "safeMode", true) && Values.bool(spec, "allowWrite", false);
             boolean write = policy.validate(sql.sql(), allowWrite).write();
             request.put("sql", sql.sql()); request.put("parameters", sql.values()); request.put("databaseSourceId", source.id());
-            int maxRows = Values.integer(spec, "maxRows", 1000, 1, 10000);
+            int maxRows = Values.integer(spec, "maxRows", 1000, ExecutionLimits.SQL_ROWS_MIN, ExecutionLimits.SQL_ROWS_MAX);
             boolean dryRun = Values.bool(spec, "dryRun", true);
             try (var lease = pools.borrow(source)) {
                 Connection connection = lease.connection(); connection.setReadOnly(!write); connection.setAutoCommit(false);
                 try (PreparedStatement statement = connection.prepareStatement(sql.sql())) {
-                    statement.setQueryTimeout(Values.integer(spec, "timeoutSeconds", 30, 1, 300)); statement.setMaxRows(maxRows + 1);
+                    statement.setQueryTimeout(Values.integer(spec, "timeoutSeconds", 30, ExecutionLimits.SQL_TIMEOUT_MIN_SECONDS, ExecutionLimits.SQL_TIMEOUT_MAX_SECONDS)); statement.setMaxRows(maxRows + 1);
                     for (int i = 0; i < sql.values().size(); i++) statement.setObject(i + 1, sql.values().get(i));
                     boolean query = statement.execute();
                     Map<String, Object> actual = new LinkedHashMap<>(); List<Map<String, Object>> rows = new ArrayList<>(); int affected = 0;
@@ -59,21 +59,23 @@ public final class SqlStepExecutor {
                             rows.add(row);
                         }
                     } else affected = statement.getUpdateCount();
-                    if (affected > Values.integer(spec, "maxAffectedRows", 1000, 1, 10000)) throw Problem.invalid("写入影响行数超过上限，事务已回滚");
+                    if (affected > Values.integer(spec, "maxAffectedRows", 1000, ExecutionLimits.SQL_ROWS_MIN, ExecutionLimits.SQL_ROWS_MAX)) throw Problem.invalid("写入影响行数超过上限，事务已回滚");
                     actual.put("rows", rows); actual.put("rowCount", rows.size()); actual.put("affectedRows", affected);
                     actual.put("dryRun", dryRun); actual.put("durationMs", elapsed(start));
                     List<AssertionResult> checks = assertions.evaluate(Values.objects(spec.get("assertions")), actual, bindings);
                     Map<String, Object> exports = new LinkedHashMap<>();
-                    for (var export : Values.map(spec.get("exports")).entrySet()) {
+                    if (!rows.isEmpty()) for (var export : Values.map(spec.get("exports")).entrySet()) {
                         String column = Objects.toString(export.getValue(), "");
-                        if (rows.isEmpty() || !rows.getFirst().containsKey(column)) throw Problem.invalid("SQL 导出字段不存在: " + column);
+                        if (!rows.getFirst().containsKey(column)) throw Problem.invalid("SQL 导出字段不存在: " + column);
                         exports.put(export.getKey(), rows.getFirst().get(column));
                     }
                     context.checkpoint(); boolean passed = checks.stream().allMatch(AssertionResult::passed);
+                    boolean emptyExport = rows.isEmpty() && !Values.map(spec.get("exports")).isEmpty();
+                    if (emptyExport) { passed = false; actual.put("exportError", "SQL 没有返回任何行"); }
                     if (!write || dryRun || !passed) connection.rollback(); else connection.commit();
                     actual.put("committed", write && !dryRun && passed);
                     if (passed) context.publish(exports);
-                    return safe(new StepResult(passed ? "PASSED" : "FAILED", elapsed(start), request, actual, checks, exports, List.of(), passed ? null : "SQL 断言失败"), bindings);
+                    return safe(new StepResult(passed ? "PASSED" : "FAILED", elapsed(start), request, actual, checks, exports, List.of(), passed ? null : emptyExport ? "SQL 没有返回任何行" : "SQL 断言失败"), bindings);
                 } catch (Exception error) { connection.rollback(); throw error; }
             }
         } catch (CancellationException e) { throw e; }
