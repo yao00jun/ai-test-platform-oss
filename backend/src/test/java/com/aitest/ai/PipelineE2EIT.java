@@ -63,7 +63,6 @@ class PipelineE2EIT extends ExchangeHttpTest {
                 String pipeline = object(response).get("pipelineId").toString();
                 await().atMost(Duration.ofSeconds(35)).until(() -> assets.list(project, AssetType.API_CASE, null, "订单生成用例", 0, 10).total() == 1);
                 String orderCase = assets.list(project, AssetType.API_CASE, null, "订单生成用例", 0, 10).items().getFirst().id();
-                model.enqueue("{\"changes\":[],\"reason\":\"登录接口没有业务写入，无需 SQL 校验\"}");
                 model.enqueue(changes(List.of(add("SQL_VALIDATION", "sql", orderCase, "订单实际入库状态", Map.of("databaseSourceId", source.id(), "sql", "SELECT state FROM " + table + " WHERE id=${orderId}", "assertions", List.of(Map.of("type", "field", "field", "state", "expected", "PAID")))))));
                 model.enqueue(changes(List.of(add("UI_SCENARIO", "web", null, "退款页面验收", Map.of("baseUrl", url)), add("UI_STEP", "open", "@web", "访问页面", Map.of("action", "navigate", "url", "/")), add("UI_STEP", "assert", "@web", "核对退款结果", Map.of("action", "assertText", "selector", "#refund-state", "expected", "退款成功", "timeoutMs", 500)))));
                 model.enqueue(json.write(Map.of("title", "[退款] 页面未显示成功结果", "severity", "MAJOR", "reproduceSteps", "查看退款页面", "expectedResult", "退款成功", "actualResult", "处理中", "rootCauseAnalysis", "推测页面未更新，需要核对退款接口。", "fixSuggestion", "核对页面轮询与状态映射。")));

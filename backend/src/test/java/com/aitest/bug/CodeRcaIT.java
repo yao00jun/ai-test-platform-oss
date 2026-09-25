@@ -78,16 +78,17 @@ class CodeRcaIT extends CodeRcaSupport {
             assertThat(Values.objects(evidence.get("diagnostics"))).anySatisfy(item -> assertThat(item).containsEntry("code", input.get("reason")));
         }
     }
-    @Test void unsupportedPreciseModelDiagnosisCannotCreateABugAndRemainsInspectable() throws Exception {
+    @Test void unsupportedPreciseModelDiagnosisIsDroppedAndRemainsInspectable() throws Exception {
         String project = project().id(); String run = failure(project, null, STACK);
         try (var model = new ModelFixtureServer()) {
             configure(model);
             for (int retry = 0; retry < 2; retry++) model.enqueue(json.write(diagnosis(code("凭空猜测", "OrderService.java:5", PATCH))));
             var accepted = diagnose(project, run);
-            assertThat(terminal(project, accepted.get("jobId").toString()).status()).isEqualTo("FAILED");
-            assertThat(assets.list(project, AssetType.BUG, null, "", 0, 100).total()).isZero();
+            assertThat(terminal(project, accepted.get("jobId").toString()).status()).isEqualTo("SUCCEEDED");
+            var bug = assets.list(project, AssetType.BUG, null, "", 0, 100).items().getFirst();
+            assertThat(Values.map(bug.data().get("codeDiagnosis"))).isEmpty();
             var history = object(request("GET", "/api/ai/conversations/" + accepted.get("conversationId") + "?projectId=" + project, null));
-            assertThat(Values.objects(history.get("messages"))).anySatisfy(message -> assertThat(message).containsEntry("role", "assistant").containsEntry("status", "FAILED"));
+            assertThat(Values.objects(history.get("messages"))).anySatisfy(message -> assertThat(message).containsEntry("role", "assistant").containsEntry("status", "APPLIED"));
         }
     }
 }

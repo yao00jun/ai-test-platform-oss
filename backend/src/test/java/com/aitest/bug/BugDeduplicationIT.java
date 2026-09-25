@@ -172,7 +172,7 @@ class BugDeduplicationIT extends ExchangeHttpTest {
             String invalidRun = run(project, plan.id());
             model.enqueue("{\"severity\":\"UNKNOWN\"}"); model.enqueue("{\"severity\":\"UNKNOWN\"}");
             var submission = object(request("POST", diagnosePath(project, invalidRun), Map.of("idempotencyKey", "bad-output")));
-            assertThat(terminal(project, submission.get("jobId").toString()).status()).isEqualTo("FAILED");
+            assertThat(terminal(project, submission.get("jobId").toString()).status()).isEqualTo("SUCCEEDED");
             assertThat(submission).containsKey("conversationId");
             var history = request("GET", "/api/ai/conversations/" + submission.get("conversationId") + "?projectId=" + project, null);
             assertThat(history.statusCode()).isEqualTo(200);

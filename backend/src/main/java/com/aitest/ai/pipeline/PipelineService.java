@@ -101,7 +101,11 @@ public class PipelineService implements JobHandler {
         if (stage == null || stage.isBlank()) stage = Values.objects(pipeline.get("steps")).stream().filter(step -> !Set.of("COMPLETED", "SKIPPED").contains(step.get("status"))).map(step -> step.get("stage").toString()).findFirst().orElseThrow(() -> Problem.invalid("已完成阶段请使用全局反馈优化，不重复生成资产"));
         String chosen = stage;
         var previous = Values.objects(pipeline.get("steps")).stream().filter(step -> chosen.equals(step.get("stage"))).findFirst().orElseThrow(() -> Problem.invalid("没有可重试的阶段"));
-        if (Set.of("COMPLETED", "SKIPPED").contains(previous.get("status"))) throw Problem.invalid("已完成阶段请使用全局反馈，重试仅处理未完成阶段");
+        boolean retryFailedDiagnosis = "S6".equals(chosen)
+                && "COMPLETED_WITH_GAPS".equals(pipeline.get("status"))
+                && hasFailedDiagnosis(previous);
+        if (Set.of("COMPLETED", "SKIPPED").contains(previous.get("status")) && !retryFailedDiagnosis)
+            throw Problem.invalid("已完成阶段请使用全局反馈，重试仅处理未完成阶段");
         updateResumeConfig(id, pipeline, input);
         Job job = enqueue(input.projectId(), id, stage, discriminator, Map.of("resumeRequest", resumeRequest));
         return submission(repository.get(input.projectId(), id), job.id());
@@ -129,6 +133,11 @@ public class PipelineService implements JobHandler {
         Map<String, Object> old = new LinkedHashMap<>(Values.map(previous)), current = json.map(json.write(input));
         if (current.get("sourceSnapshotId") == null && !old.containsKey("sourceSnapshotId")) current.remove("sourceSnapshotId");
         return old.equals(current);
+    }
+    private boolean hasFailedDiagnosis(Map<String, Object> step) {
+        Map<String, Object> output = Values.map(step.get("output"));
+        Map<String, Object> diagnosis = Values.map(output.get("diagnosis"));
+        return Values.objects(diagnosis.get("items")).stream().anyMatch(item -> "FAILED".equals(item.get("status")));
     }
     public Map<String, Object> cancel(String project, String id) {
         // Publish the pipeline stop under its project lock, then release it before taking

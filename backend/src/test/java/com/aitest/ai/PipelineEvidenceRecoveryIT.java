@@ -30,6 +30,9 @@ class PipelineEvidenceRecoveryIT extends ExchangeHttpTest {
             model.enqueue(json.write(Map.of("changes", List.of(
                     add("UI_SCENARIO", "web", null, "无证据场景", Map.of("baseUrl", "http://unobserved.invalid/")),
                     add("UI_STEP", "go", "@web", "无证据跳转", Map.of("action", "navigate", "url", "/secret-refund"))))));
+            model.enqueue(json.write(Map.of("changes", List.of(
+                    add("UI_SCENARIO", "web", null, "无证据场景", Map.of("baseUrl", "http://unobserved.invalid/")),
+                    add("UI_STEP", "go", "@web", "无证据跳转", Map.of("action", "navigate", "url", "/secret-refund"))))));
             String id = submit(project, requirement.id(), Map.of("uiEvidenceIds", List.of(recording.id()), "execute", false));
             var result = terminal(project, id);
             assertThat(result.get("status")).isEqualTo("FAILED");
@@ -73,11 +76,12 @@ class PipelineEvidenceRecoveryIT extends ExchangeHttpTest {
             model.enqueue("invalid diagnosis"); model.enqueue("invalid repair");
             String id = submit(project, requirement.id(), Map.of("environmentId", environment.id(), "apiDefinitionIds", List.of(definition.id()), "execute", true));
             var stopped = terminal(project, id);
-            assertThat(stopped.get("status")).isEqualTo("FAILED");
+            assertThat(stopped.get("status")).isEqualTo("COMPLETED_WITH_GAPS");
             assertThat(stopped.get("runId")).isNotNull(); assertThat(calls).hasValue(1);
             Asset plan = assets.list(project, AssetType.TEST_PLAN, null, "", 0, 10).items().getFirst();
             model.enqueue(json.write(Map.of("title", "退款接口返回错误", "severity", "MAJOR", "reproduceSteps", "请求退款接口", "expectedResult", "状态码 200", "actualResult", "状态码 500", "rootCauseAnalysis", "推测退款处理异常", "fixSuggestion", "检查服务端日志")));
-            assertThat(request("POST", "/api/ai/pipelines/" + id + "/resume", Map.of("projectId", project, "stage", "S6", "idempotencyKey", "diagnose-only")).statusCode()).isEqualTo(200);
+            var resume = request("POST", "/api/ai/pipelines/" + id + "/resume", Map.of("projectId", project, "stage", "S6", "idempotencyKey", "diagnose-only"));
+            assertThat(resume.statusCode()).as(new String(resume.body())).isEqualTo(200);
             var resumed = terminal(project, id);
             assertThat(resumed.get("status")).as(resumed.toString()).isEqualTo("COMPLETED_WITH_GAPS");
             assertThat(resumed.get("runId")).isEqualTo(stopped.get("runId")); assertThat(calls).hasValue(1);
